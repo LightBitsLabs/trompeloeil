@@ -1,3 +1,375 @@
+	* Conditional support for non-awaitable coroutines, like std::generator.
+	  Thank you Artem Suleimanov for submitting the improvement.
+
+	* Support C++20 (and higher) on MSVC with the traditional preprocessor.
+	  Thank you Kevin Puetz for reporting and submitting the fix.
+
+v49 2024-10-07
+
+	* Added mocking macros that infers function arity from a trailing return
+	  type syntax signature.
+
+	    MAKE_MOCK(name, signature {, specifiers})
+	    MAKE_CONST_MOCK(name, signature {, specifiers})
+	    MAKE_STDMETHOD_MOCK(name, signature {, specifiers})
+
+	  Note that these only work with trailing return type syntax. Examples
+	  of specifiers are 'override', 'final' and 'noexcept'
+
+	  The preprocessor is limited and can only handle nullary functions,
+	  i.e. functions that do not accept any arguments, in some cases.
+
+	  MSVC handles nullary functions when compiling with /Zc:preprocessor
+	  with MSVC 19.40 (VS 17.10) or later.
+
+	  Gcc and Clang always handles nullary functions when compiling with
+	  C++20 or later, and when enabling a gcc extension by compiling with
+	  -std=gnu++11/14/17 and defining the macro TROMPELOEIL_HAS_GCC_PP before
+	  #include:ing the trompeloeil headers.
+
+
+	* Added .RT_TIMES() to exceptations, which works like .TIMES()
+	  but where the limits are only known at runtime. Thank you
+	  Dominic Koepke for submitting the implementation.
+
+	* Added several new composable matchers.
+
+	  range matchers range_includes(*elements*), range_is(*elements*),
+	  range_is_permutation(*elements*), range_all_of(*comparator*),
+	  range_none_of(*comparator*), range_any_of(*comparator*),
+	  range_starts_with(*elements*) and range_ends_with(*elements*).
+
+	  Use in expectations as:
+
+	    REQUIRE_CALL(obj, vector_func(range_starts_with(2,3,5,8)));
+
+      MEMBER_IS(ptr_to_mem, matcher). Use as:
+
+        REQUIRE_CALL(obj, func(MEMBER_IS(&type::height, gt(5)));
+
+      all_of(matchers), any_of(matchers), none_of(matchers). Use as:
+
+        REQUIRE_CALL(obj, func(any_of(-1, gt(0))));
+
+      These can be composed like:
+
+        REQUIRE_CALL(obj, func(range_all_of(
+                                 any_of(MEMBER_IS(&type::x, -1),
+                                        MEMBER_IS(&type::y, gt(0))))));
+
+      Thank you Artem for the suggestion.
+
+	* When an expectation is constrained by several .WITH() clauses, a
+	  violation report will only include the first failed condition,
+	  short cirquiting the login.
+
+	  Example:
+
+	    REQUIRE_CALL(obj, func(_))
+	    .WITH(_1 != nullptr)
+	    .WITH(*_1 == 0); // would be runtime crash on nullptr access
+
+	  Thank you Örjan Gustavsson for the suggestion.
+
+v48 2024-07-17
+
+	* Fixed memory leak when adding an action (.RETURN, .SIDE_EFFECT, etc)
+	  throws. Thank you Dominic Koepke for the fix.
+
+	* Dropped older compilers from CI builds (gcc <= 6 and clang <= 7) since
+	  GitHub actions now require node-20, and no build environment is
+	  currently available that both supports node-20 and older compilers.
+
+	* Support for STDMETHOD functions for COM. Thank you Luis Andres Cesena
+	  for the implementation, and Kevin Puetz for the discussions. This
+	  adds new macros:
+
+	      MAKE_STDMETHOD_MOCKn(...)
+	      IMPLEMENT_STDMETHOD_MOCKn(...)
+
+	* Fixed issue with std::expected causing compilation error. Thank you
+	  @subbota-a for reporting
+
+	* Silenced gcc -Weffc++ warnings. Thanks Sven Fischer for the report
+
+v47 2024-01-01
+
+	* Coroutines are conditionally supported by the __cpp_impl_coroutine
+	  feature test macro. There is no longer any need to define the
+	  TROMPELOEIL_EXPERIMENTAL_COROUTINES macro in order to use coroutines
+	  with Trompeloeil.
+
+	* Split the monolithic "trompeloeil.hpp" into several smaller
+	  headers. You can continue to #include <trompeloeil.hpp> as usual,
+	  but you can also do more fine grained #include:s, which may
+	  improve build times. E.g.:
+
+	      #include <trompeloeil/mock.hpp> // basic mock functionality
+	      #include <trompeloeil/lifetime.hpp> // REQUIRE_DESTRUCTION etc.
+	      #include <trompeloeil/matcher/re.hpp> // regular expressions
+
+	  The reference manual says which header to include to get the
+	  functionality for each item. If no header is mentioned, it is in
+	  <trompeleil/mock.hpp>
+
+v46 2023-11-06
+
+	* Experimental support for coroutines. Use CO_RETURN (or LR_CO_RETURN)
+	  for a member function that has a coroutine return type. Use CO_THROW
+	  (or LR_CO_THROW) to throw from a coroutine. Use as many CO_YIELD
+	  (or LR_CO_YIELD) from a coroutine function as you like, as long as the
+	  promise type supports it.
+
+	  The experimental support must be explicitly enabled with
+
+	    #define TROMPELOEIL_EXPERIMENTAL_COROUTINES
+	    #include <trompeloeil.hpp>
+
+	  alternatively
+
+	    #define TROMPELOEIL_EXPERIMENTAL_COROUTINES
+	    #include <trompeloeil/mock.hpp>
+	    #include <trompeloeil/coro.hpp>
+
+	  trompeloeil::stream_tracer does not produce correct result for
+	  coroutines
+
+	* Corrected output of input-range like types. Thank you Dominic Koepke for
+	  the fix.
+
+	* The self test program "custom_recursive_mutex" now says that it's
+	  succeeded. Thank you @yurivict for reporting the confusion.
+
+	* Self test programs are only build when explicitly setting
+	  -DTROMPELOEIL_BUILD_TESTS=yes to the CMake command line.
+
+	* The self test programs require a higher version of CMake (3.19
+	  currently)
+
+v45 2023-07-21
+
+	* Support matching regular expressions to std::string view
+
+	* Added adapter for QA Systems Cantata. Thank you Andreas Schätti
+
+v44 2023-04-10
+
+	* Fixed issue 293: Wildcard _ could not match types that can be
+	  constructed from any type. This fix unfortunately turns off conversion
+	  warnings for REQUIRE_CALL and friends when building with gcc. Thank
+	  you @TimonNoethlichs for reporting.
+
+	* Fixed issue 296: Improved sequence violation message when ALLOW_CALL
+	  is involved. Thank you Sigurður Sveinn Halldórsson for reporting.
+
+	* Fixed -Wunsafe-buffer-usage warning from clang-16
+
+	* static_assert() when trying to get a runtime value from any matcher
+
+	* Bumped required CMake version to 3.14 or later. Thank you Luke Dennis
+	  for reporting.
+
+v43 2022-10-26
+
+	* Added static_assert to duck_typed_matcher's templatized conversion
+	  function explaining why it should never be instantiated. Issue 270.
+
+	* Added gcc-12 and clang++-15 to the CI build matrix
+
+	* Fixed issue 272: Support Catch2 piecemeal headers.
+
+	* Fix issue #279 where the doctest adapter showed violation messages
+	  as hex addresses for most recent releases of doctest. Thanks
+	  @SimonKagstrom for reporting.
+
+	* Fixed an obscure bug where an expectation could match with a sequence
+	  object that has run to completion.
+
+	* Specify ARCH_INDEPENDENT when creating package version file in CMake.
+
+v42 2021-12-07
+
+	* Fixed issue 264: Sequence objects did not correctly report
+	  is_complete() when there were living, but satisfied, expectations
+	  remaining. Thank you Václav Kubernát for reporting.
+
+	* Fixed issue 259 where CMakeFiles.txt wrongly installed trompeloeil
+	  for projects that includes it. It is now an option. See FAQ for
+	  details. Thank you Ismail Pazarbasi for reporting and fixing.
+
+	* Updated Catch2 to version 2.13.7 to compile unit tests on systems
+	  with glibc >= 2.34.
+
+	* Fixed issue 255: Hex dumps showed byte values <= 15(dec) wrong.
+	  Thank you Stuart Dootson for reporting.
+
+	* Fixed issue 253: Resolve lingering warnings in early Clang compilers
+	  and enable -Wzero-as-null-pointer-constant when compiling unit tests
+	  with GCC and Clang.
+
+	* Fixed issue 250: Warnings about zero argument variadic macros with
+	  clang-msvc. Thank you u3shit for reporting and fixing.
+
+	* Fixed issue 251: trompeloeil::printer<> customization point now
+	  supports SFINAE expressions to constrain partial specializations.
+	  Thank you  Christian Morales Vega for reporting.
+
+	* Fixed issue 245: Modify cmake to build thread_terror on Windows with
+	  MSVC.
+
+	* Use CMake internal Threads::Threads target where needed. Thank you
+	  Martin Hořeňovský for reporting.
+
+	* For CI builds, use github actions cacheing of built libc++ to shorten
+	  build times.
+
+	* Added CMake install namespace. Thank you offa
+
+	* Fixed bug where an expectation end of life was reported as an error
+	  if it was included in a satisfied sequence. Thank you Andy Saul.
+
+v41 2021-06-15
+
+	* catch2 adapter works with CATCH_CONFIG_PREFIX_ALL.
+	  thanks Christian Morales Vega
+
+	* Silenced -Wreserved-identifier from Clang "latest" (13.0.0).
+
+	* Silenced (again) the MSVC C4702 warning from the default_return<>()
+	  function template.
+
+	* Introduced type trompeloeil::printer<T> as a customization point or
+	  formatting data to strings in reports. This has the advantage of
+	  allowing partial specializations. The old technique of specializing
+	  the function template trompeloeil::print(ostream&, const T&) still
+	  works.
+
+v40 2021-03-14
+
+	* Silenced -Wnonnull warning from GCC 9 and newer. Thank you Tony Neubert.
+
+	* Fixed custom reported documentation bug. Thanks Matt Godbolt.
+
+	* Added CMake alias target trompeloeil::trompeloeil.
+	  Thank you Leon De Andrade.
+
+	* Documentation markdown fixes. Thank you offa.
+
+	* Moved all CI builds to github actions. travis-ci and appveyor
+	  are no longer used.
+
+	* Moved CI coverage collection to codecov.io
+
+	* Conan recipe is now on https://conan.io/center/trompeloeil
+	  the old rollbear/stable channel is defunct. Thank you Florian Berchtold.
+
+v39 2020-10-31
+
+	* Fix issue 204: ALLOW_CALL was not respected in sequences.
+	  Now ALLOW_CALL in sequence may be skipped, but making a
+	  call out of sequence is a violation. NOTE! This fix is likely
+	  to break some existing test code!
+
+	* Fix issue 211: #include <QtCore/QChar> before #include <trompeloeil.hpp>
+	  caused compilation failure for all expectations.
+
+	* Fix minor spelling errors and markdownlint warnings.
+
+	* Issue 207: Extend cmake script to allow use of libc++ with g++
+
+	* Fix issue 129: Wildcard _ does not match pass-by-value tuple
+	  of only one type.
+
+	* Fix issue 197: Add override to virtual destructors
+	  to avoid -Wsuggest-destructor-override warnings.
+
+v38 2020-06-08
+
+	* Fixed bug where ALLOW_CALL only worked with sequences
+	  if called at least once
+
+	* Fixed bug to support IMPLEMENT_MOCKx and IMPLEMENT_CONST_MOCKx
+	  constexpr
+
+	* More fixes to Conan packaging. Thank you Kai Bernhard.
+
+	* Support OK-reporters from the runtime reporter registration
+	  API. Thank you Moritz Haase.
+
+	* Rewrites to not trigger deprecation warnings in C++17 builds.
+	  Thank you Kasper Laudrup.
+
+v37 2020-02-09
+
+	* Added adapter for the Criterion unit testing framework. Thanks you
+
+	  Etienne Barbier <etienne.barbier@atos.net>
+
+	* Fixes to Conan packaging. Thank you kert
+
+	* Fix issue 180 for GCC and MSVC, where the presence of a type
+	  like Qt5/QChar broke compilation of unrelated mock signatures.
+
+	* Fix TROMPELOEIL_CONCAT macro issue to restore compiling with MSVC
+	  when traditional preprocessor is enabled.
+
+	* Fix issue 173 for GCC 4.x by performing testing to confirm
+	  correctness of existing code.
+
+v36 2019-12-29
+
+	* Status reporting of passed expectation calls as successful assertions in
+	  DOCTEST and Catch2. Thanks to:
+
+	    Tore Martin Hagen <tore@instanes.name> for Catch2
+	    Cristian Morales Vega <cristian@samknows.com> for DOCTEST
+
+	  You get the support via the provided headers
+
+	    #include <catch2/trompeloeil.hpp>
+	    #include <doctest/trompeloeil.hpp>
+
+	  See the CookBook for information about adding such hooks for other unit
+	  testing frame works.
+
+	* Fixed issue 172 where THROW() would not compile if the function returns
+	  a type that is not default constructible.
+
+	* Partially fixed issue 173, where an object constructible from nullptr
+	  but not comparable with nullptr, would be constructed when printed
+	  (for example when an expectation failed.)
+
+	  Unfortunately this fix does not work for gcc versions 4.x or MSVC 14.
+
+v35 2019-04-01
+
+	* Improvements to documentation. Thanks to:
+
+	    Robert Dailey <rcdailey@gmail.com>
+	    Yuri Timenkov <yuri@timenkov.ru>
+	    Viatorus <lutztonineubert@gmail.com>
+
+	* Improved DocTest integration. Thanks to:
+
+	    Cristian Morales Vega <cristian@samknows.com>
+
+	* CMakeLists.txt honours CMAKE_INSTALL_LIBDIR. Thanks to:
+
+	    Cristian Morales Vega <cristian@samknows.com>
+
+	* Partially fixed issue 155, where an unfulfilled expectation, when
+	  built with the default throwing reporter, terminated without a
+	  message when compiled with gcc and optimization. With the partial
+	  fix the program still terminates, but with the correct violation
+	  message displayed.
+
+	* Fixed issue 157 where it was impossible to place an expectation on a
+	  reference to a non-copyable type. This fix also resolved a number of
+	  problems with older compilers. See docs/Backward.md for details.
+
+	* Fixed clang-tidy warning, misc-non-private-member-variables-in-classes
+	  that leaks into application code from the Trompeloeil header.
+
 v34 2019-04-01
 
 	* Rearranged include directory structure to make it easier to use, and
@@ -128,7 +500,7 @@ v29 2017-07-23
 	* Fix Issue #48: Move "re" in lambda capture list in "regex_check".
 	* Fix Issue #55: Restore warnings for Clang builds.
 	* Correct spelling of SANITIZE for clang Xcode builds.
-	* Fix Issue #57: Avoid uneeded-member-function warning from Clang.
+	* Fix Issue #57: Avoid unneeded-member-function warning from Clang.
 	* Allow only standard C++ dialects in Trompeloeil test programs.
 	* Lightly edited documentation.
 
@@ -365,7 +737,7 @@ v13 2016-03-07
 
 v12 2016-02-01
 
-	* Built in matchers are duck tuped by default, i.e. eq, ne, gt, ge,
+	* Built in matchers are duck typed by default, i.e. eq, ne, gt, ge,
 	  lt, le do by default match any parameter that supports operators
 	  ==, !=, >, >=, <, <= with the value provided. If needed for
 	  disambiguation of overloads an explicit type can be provided. Example:
@@ -387,7 +759,7 @@ v12 2016-02-01
 	  comparison with nullptr was allowed.
 
 	* Reluctantly reverted use of std::tuple_element_t<> for
-	  typename tuppe_element<>::type, to support g++ 4.9.0 (4.9.1 does have
+	  typename tuple_element<>::type, to support g++ 4.9.0 (4.9.1 does have
 	  std::tuple_element_t<>.)
 
 v11 2016-01-04
@@ -440,7 +812,7 @@ v9  2015-11-29
 v8  2015-10-30
 
 	* Fixed bug when mock object was destroyed with a saturated
-	  expecation in scope.
+	  expectation in scope.
 
 	* Further improved compilation error messages.
 

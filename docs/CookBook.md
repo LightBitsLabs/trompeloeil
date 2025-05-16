@@ -8,9 +8,12 @@
   - [Mocking a class template](#mocking_class_template)
   - [Mocking non-virtual member functions](#mocking_non_virtual)
   - [Mocking free functions](#mocking_free_functions)
+  - [Mocking functions which return a template](#mocking_return_template)
+  - [Mocking __stdcall functions](#mocking_stdcall)
 - [Setting Expectations](#setting_expectations)
   - [Matching exact values](#matching_exact_values)
   - [Matching values with conditions](#matching_conditions)
+  - [Matching ranges with conditions](#matching_ranges)
   - [Matching strings with regular expressions](#matching_regular_expressions)
   - [Matching pointers to values](#matching_pointers)
   - [Matching the opposite of a matcher](#negating_matchers)
@@ -55,6 +58,7 @@ sample adaptations are:
 - [lest](#adapt_lest)
 - [boost Unit Test Framework](#adapt_boost_unit_test_framework)
 - [MSTest](#adapt_mstest)
+- [Criterion](#adapt_criterion)
 
 There are two mechanisms for adapting to a testing frame work. The compile time
 adapter and the run time adapter. The compile time adapter is easier to use,
@@ -87,9 +91,9 @@ namespace trompeloeil
   template <>
   inline void reporter<specialized>::send(      //** 3 **//
     severity s,
-    const char* file,
+    char const* file,
     unsigned long line,
-    const char* msg)
+    std::string const& msg)
   {
     auto f = line ? file : "[file/line unavailable]";
     if (s == severity::fatal)
@@ -152,11 +156,17 @@ using reporter_func = std::function<void(
   char const *file,
   unsigned long line,
   std::string const &msg)>;
-reporter_func trompeloeil::set_reporter(reporter_func new_reporter)
+using ok_reporter_func = std::function<void(char const *msg)>;
+
+reporter_func trompeloeil::set_reporter(reporter_func new_reporter);
+std::pair<reporter_func, ok_reporter_func> trompeloeil::set_reporter(
+  reporter_func new_reporter, ok_reporter_func new_ok_reporter)
 ```
 
 Call it with the adapter to your test frame work. The return value is the old
-adapter.
+adapter. The overload is provided to allow you to also set an 'OK reporter' at
+the same time (it also returns the old 'OK reporter') See the next section for
+details.
 
 It is important to understand the first parameter
 `trompeloeil::severity`. It is an enum with the values
@@ -174,17 +184,83 @@ location. An example is an unexpected call to a
 are no expectations. In these cases `file` will be `""` string and
 `line` == 0.
 
+### Status OK reporting
+
+It is possible to make an adaption to the reporter that will be called if
+a positive expectation is met. This can be useful for correct counting and reporting
+from the testing framework. Negative expectations like `FORBID_CALL` and
+`.TIMES(0)` are not counted.
+
+Either provide your adapter as an inline specialization of the
+`trompeloeil::reporter<trompeloeil::specialized>::sendOk()` function at
+compile time or as the second argument to
+`trompeloeil::set_reporter(new_reporter, new_ok_reporter)` at runtime.
+The function should call a matcher in the testing framework that always
+yields true.
+
+Below, as an example, is the compile time adapter for the Catch2 unit testing frame
+work, in the file `<catch2/trompeloeil.hpp>`
+
+```Cpp
+  template <>
+  inline void reporter<specialized>::sendOk(
+    const char* trompeloeil_mock_calls_done_correctly)
+  {
+      REQUIRE(trompeloeil_mock_calls_done_correctly);
+  }
+```
+
+If you roll your own `main()`, you may prefer a runtime adapter instead. Please note that the first param given to `set_reporter()` here is a dummy - see the sections below for implementation examples for your unit testing framework of choice.
+
+```Cpp
+trompeloeil::set_reporter(
+  [](auto, auto, auto, auto) {}, // Not relevant here
+  [](const char* trompeloeil_mock_calls_done_correctly)
+    {
+      // Example for Catch2
+      REQUIRE(trompeloeil_mock_calls_done_correctly);
+    }
+);
+```
+
+Below is a simple example for *Catch2*:
+
+```Cpp
+class MockFoo
+{
+public:
+    MAKE_MOCK0(func, void());
+};
+
+TEST_CASE("Foo test")
+{
+    MockFoo foo;
+    REQUIRE_CALL(foo, func()).TIMES(2,4);
+    foo.func();
+    foo.func();
+}
+```
+
+When the test is executed we get the following output
+
+```sh
+$ ./footest
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+```
+
 ### <A name="adapt_catch"/>Use *Trompeloeil* with [Catch2](https://github.com/catchorg/Catch2)
 
 The easiest way to use *Trompeloeil* with *Catch2* is to
 `#include <catch2/trompeloeil.hpp>` in your test .cpp files. Note that the
-inclusion order is important. `<catch.hpp>` must be included before
-`<catch/trompeloeil.hpp>`.
+inclusion order is important. `<catch.hpp>` (Catch2 2.x) or
+`<catch2/catch_test_macros.hpp>` (Catch2 3.x) must be included before
+`<catch2/trompeloeil.hpp>`.
 
 Like this:
 
 ```Cpp
-#include <catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <catch2/trompeloeil.hpp>
 
 TEST_CASE("...
@@ -514,6 +590,51 @@ Place the below code snippet in, for example, your `TEST_CLASS_INITIALIZE(...)`
   });
 ```
 
+### <A name="adapt_criterion"/>Use *Trompeloeil* with [Criterion](https://github.com/Snaipe/Criterion)
+
+The easiest way to use *Trompeloeil* with *Criterion* is to
+`#include <criterion/trompeloeil.hpp>` in your test .cpp files. Note that the
+inclusion order is important. `<criterion/criterion.hpp>` must be included before
+`<criterion/trompeloeil.hpp>`.
+
+Like this:
+
+```Cpp
+#include <criterion/criterion.hpp>
+#include <criterion/trompeloeil.hpp>
+
+Test(...
+```
+
+If you instead prefer a runtime adapter, make sure to call
+
+```Cpp
+  trompeloeil::set_reporter([](
+    trompeloeil::severity s,
+    const char* file,
+    unsigned long line,
+    std::string const& msg)
+  {
+    struct criterion_assert_stats cr_stat__;
+    cr_stat__.passed = false;
+    cr_stat__.file = file;
+    cr_stat__.line = line;
+    cr_stat__.message = msg;
+    if (s == severity::fatal)
+    {
+        criterion_send_assert(&cr_stat__);
+        CR_FAIL_ABORT_();
+    }
+    else
+    {
+        criterion_send_assert(&cr_stat__);
+        CR_FAIL_CONTINUES_();
+    }
+  });
+```
+
+before running any tests.
+
 ## <A name="creating_mock_classes"/> Creating Mock Classes
 
 A Mock class is any class that [mocks](reference.md/#mock_function) member
@@ -531,11 +652,28 @@ only work when implementing to an interface, do not handle multiple inheritance
 and do not handle overloads.
 
 A more generic technique is to implement free mocks as members of any
-`struct` or `class` using the macros [**`MAKE_MOCKn`**](
+`struct` or `class` using the macros [**`MAKE_MOCK`**](
+reference.md/#MAKE_MOCK
+) and [**`MAKE_CONST_MOCK`**](
+reference.md/#MAKE_CONST_MOCK
+) and also [**`MAKE_MOCKn`**](
   reference.md/#MAKE_MOCKn
-) and [**`MAKE_CONST_MOCKn`**](
+)  and [**`MAKE_CONST_MOCKn`**](
   reference.md/#MAKE_CONST_MOCKn
-), where `n` is the number of parameters in the function.
+).
+
+The macros [**`MAKE_MOCKn`**](
+reference.md/#MAKE_MOCKn
+)  and [**`MAKE_CONST_MOCKn`**](
+reference.md/#MAKE_CONST_MOCKn
+) requires that you explicitly state the number of parameters to the function
+(the `n`), while macros [**`MAKE_MOCK`**](
+reference.md/#MAKE_MOCK
+) and [**`MAKE_CONST_MOCK`**](
+reference.md/#MAKE_CONST_MOCK
+) infers the number of parameters, but require that you write the function
+signatures with the trailing return type syntax.
+
 
 Example:
 
@@ -556,7 +694,7 @@ class MockDictionary : public trompeloeil::mock_interface<Dictionary>
 
 struct Logger
 {
-  MAKE_MOCK2(log, void(int severity, const std::string& msg));
+  MAKE_MOCK(log, auto (int severity, const std::string& msg) -> void);
 };
 
 ```
@@ -568,9 +706,11 @@ The line `IMPLEMENT_CONST_MOCK1(lookup);` implements the function
 `std::string& lookup(int) const` and the line `IMPLEMENT_MOCK2(add);` implements
 the function `void add(int, std::string&&)`.
 
-The line `MAKE_MOCK2(log, void(int severity, const std::string& msg))`
+The line `MAKE_MOCK(log, auto (int severity, const std::string& msg) -> void)`
 creates a mock function `void Logger::log(int, const std::string&)`. If
-[**`MAKE_MOCKn(...)`**](reference.md/#MAKE_MOCKn) or
+[**`MAKE_MOCK(...)`**](reference.md/#MAKE_MOCK),
+[**`MAKE_MOCKn(...)`**](reference.md/#MAKE_MOCKn),
+[**`MAKE_CONST_MOCK(...)`**](reference.md/#MAKE_CONST_MOCK)or
 [**`MAKE_CONST_MOCKn(...)`**](reference.md/#MAKE_CONST_MOCKn) are used
 to implement a virtual function from a base class, it is always recommended to
 add a third macro parameter `override` since it gives the compiler an ability to
@@ -579,11 +719,10 @@ complain about mistakes.
 ### <A name="mocking_non_public"/> Mocking private or protected member functions
 
 Mocking private or protected member functions using
-[**`MAKE_MOCKn(...)`**](reference.md/#MAKE_MOCKn) or
+[**`MAKE_MOCK(...)`**](reference.md/#MAKE_MOCK), [**`MAKE_MOCKn(...)`**](reference.md/#MAKE_MOCKn),
+[**`MAKE_CONST_MOCK(...)`**](reference.md/#MAKE_CONST_MOCK) or
 [**`MAKE_CONST_MOCKn(...)`**](reference.md/#MAKE_CONST_MOCKn) is no different
-from mocking
-
-public member functions. Just make them public in the mock class. It may seem
+from mocking public member functions. Just make them public in the mock class. It may seem
 strange that you can change access rights of a member function through
 inheritance, but C\+\+ allows it.
 
@@ -599,7 +738,7 @@ private:
 class Mock : public Base
 {
 public:
-  MAKE_MOCK1(secret, void(int), override); // not so secret now
+  MAKE_MOCK(secret, auto (int) -> void, override); // not so secret now
 };
 ```
 
@@ -625,9 +764,9 @@ Example:
 class Mock
 {
 public:
-  MAKE_MOCK1(overload, void(int));
-  MAKE_MOCK1(overload, int(const std::string&));
-  MAKE_MOCK2(overload, int(const char*, size_t));
+  MAKE_MOCK(overload, auto (int) -> void);
+  MAKE_MOCK(overload, auto (const std::string&) -> int);
+  MAKE_MOCK(overload, auto (const char*, size_t) -> int);
 };
 ```
 
@@ -654,7 +793,7 @@ class Mock
 {
 public:
   int operator()(int x) const { return function_call(x); }
-  MAKE_CONST_MOCK1(function_call, int(int));
+  MAKE_CONST_MOCK(function_call, auto (int) -> int);
 };
 ```
 
@@ -670,8 +809,8 @@ template <typename T>
 class Mock
 {
 public:
-  MAKE_MOCK1(func, void(int));
-  MAKE_MOCK2(tfunc, int(const T&, size_t));
+  MAKE_MOCK(func, auto (int) -> void);
+  MAKE_MOCK(tfunc, auto(const T&, size_t) -> int);
 };
 ```
 
@@ -682,10 +821,8 @@ work for any type `T`.
 
 ### <A name="mocking_non_virtual"/> Mocking non-virtual member functions
 
-While it is often the case that mocks are used to implement interfaces,
-there is no such requirement. Just add the [mock functions](
-  reference.md/#mock_function
-) that are needed.
+While it is often the case that mocks are used to implement interfaces, there is
+no such requirement. Just add the [mock functions][mockfun] that are needed.
 
 Example:
 
@@ -693,12 +830,19 @@ Example:
 class ConcreteMock
 {
 public:
-  MAKE_MOCK2(func, bool(size_t, const char*));
+  MAKE_MOCK(func, auto(size_t, const char*) -> bool);
 };
 ```
 
-Above `ConcreteMock` is a mock class that implements a non-virtual
-[mock function](reference.md/#mock_function) `bool func(size_t, const char*)`.
+Above `ConcreteMock` is a mock class that implements a non-virtual [mock
+function][mockfun] `bool func(size_t, const char*)`.
+
+> **REMINDER**: Non-virtual functions may not be dispatched via polymorphism at
+> runtime. This feature doesn't alter the underlying semantic rules for virtual
+> methods. If you upcast to a base type, the mock class implementations of these
+> methods will _not_ be invoked.
+
+[mockfun]: reference.md/#mock_function
 
 ### <A name="mocking_free_functions"/> Mocking free functions
 
@@ -731,7 +875,10 @@ void c_api_end(struct c_api_cookie*);
 ```
 
 ```Cpp
-// unit-test-C-API.h
+// unit-test-C-API.h -- example using Catch2
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/trompeloeil.hpp> /* this should go last */
 
 #include "C-API.h"
 
@@ -758,17 +905,17 @@ API c_api_mock;
 extern "C" {
   c_api_cookie c_api_init()
   {
-    return api_mock.c_api_init();
+    return c_api_mock.c_api_init();
   }
 
   int c_api_func1(c_api_cookie* cookie, const char* str, size_t len)
   {
-    return api_mock.c_api_func1(cookie, str, len);
+    return c_api_mock.c_api_func1(cookie, str, len);
   }
 
   void c_api_end(c_api_cookie* cookie)
   {
-    api_mock.c_api_end(cookie);
+    c_api_mock.c_api_end(cookie);
   }
 }
 ```
@@ -782,12 +929,55 @@ dispatch to the mock object.
 
 void a_test()
 {
-  REQUIRE_CALL(c_api_mock, create())
+  REQUIRE_CALL(c_api_mock, c_api_init())
     .RETURN(nullptr);
 
   REQUIRE_CALL(c_api_mock, c_api_end(nullptr));
 
   function_under_test();
+}
+```
+
+### <A name="mocking_return_template"/> Mocking functions which return a template
+
+To use template as return type, you need to introduce an alias for the return type instead:
+
+```Cpp
+using pair_ints = std::pair<int,int>;
+
+struct M
+{
+    MAKE_MOCK(make, auto (int, int)->pair_ints);
+};
+```
+If you use the [**`MAKE_MOCKn()`**](reference.md/#MAKE_MOCKn) macros, you can get away
+with enclosing the return type in parentheses, like this:
+
+```Cpp
+struct M
+{
+  MAKE_MOCK2(make, (std::pair<int,int>)(int,int));
+};
+```
+
+### <A name="mocking_stdcall"/> Mocking STDMETHOD functions
+
+Windows API functions and COM Interfaces are declared with the
+[__stdcall](https://learn.microsoft.com/en-us/cpp/cpp/stdcall?view=msvc-170)
+calling convention when targeting a 32-bit build, which becomes part of the
+signature of a method. If you have the need to mock this type of functions the
+[**`MAKE_STDMETHOD_MOCK(...)`**](reference.md/#MAKE_STDMETHOD_MOCK),
+[**`MAKE_STDMETHOD_MOCKn(...)`**](reference.md/#MAKE_STDMETHOD_MOCKn),
+[**`IMPLEMENT_STDMETHOD_MOCKn(...)`**](reference.md/#IMPLEMENT_STDMETHOD_MOCKn) and
+[**`IMPLEMENT_STDMETHOD_MOCKn(...)`**](reference.md/#IMPLEMENT_STDMETHOD_MOCKn)
+macros are provided.
+
+```Cpp
+struct Mock_stdcall : public trompeloeil::mock_interface<IUnknown>
+{
+  IMPLEMENT_STDMETHOD_MOCK0(AddRef);
+  IMPLEMENT_STDMETHOD_MOCK0(Release);
+  MAKE_STDMETHOD_MOCK(QueryInterface, auto (REFIID, void **) -> HRESULT, override);
 }
 ```
 
@@ -846,8 +1036,8 @@ Example:
 class Mock
 {
 public:
-  MAKE_MOCK1(func, void(int));
-  MAKE_MOCK2(func, void(const char*));
+  MAKE_MOCK(func, auto (int) -> void);
+  MAKE_MOCK2(func, auto (const char*) -> void);
 };
 
 void test()
@@ -883,9 +1073,9 @@ Example:
 class Mock
 {
 public:
-  MAKE_MOCK1(func, void(int));
-  MAKE_MOCK1(func, void(const char*));
-  MAKE_MOCK1(func, void(const std::string&))
+  MAKE_MOCK(func, auto (int) -> void);
+  MAKE_MOCK(func, auto (const char*) -> void);
+  MAKE_MOCK(func, auto (const std::string&) -> void)
 };
 
 void test()
@@ -897,6 +1087,74 @@ void test()
   // expectations must be met before end of scope
 }
 ```
+
+There are also compound matcher that match a value to a set of matchers.
+The matchers may be any of the above, or simple values for equality comparison.
+
+These are:
+
+- [**`all_of(`** *matchers* **`)`**](reference.md/#all_of) matches value with all of the matchers provided
+- [**`any_of(`** *matchers* **`)`**](reference.md/#any_of) matches value with at least one of the matchers provided
+- [**`none_of(`** *matchers* **`)`**](reference.md/#none) matches value with none of the matchers provided
+
+Example:
+```Cpp
+class Mock
+{
+public:
+  MAKE_MOCK1(func, void(int));
+};
+
+void test()
+{
+  Mock m;
+  using trompeloeil::any_of;
+  using trompeloeil::gt;
+  REQUIRE_CALL(m, func(any_of(-1, gt(0)))); // value must be -1 or >0.
+  func(&m);
+  // expectations must be met before end of scope
+}
+```
+### <A name="matching_ranges"/> Matching ranges with conditions
+
+Instead of using exact values of parameters to match calls with, *Trompeloeil*
+provides a set of [matchers](reference.md/#matcher). Range matchers are:
+
+- [**`range_includes(`** *matchers* **`)`**](reference.md/#range_includes) matches when all the expected values are present in the range
+- [**`range_is(`** *matchers* **`)`**](reference.md/#range_is) matches values of each element in the range with expected values
+- [**`range_is_permutation(`** *matchers* **`)`**](reference.md/#range_is_permutation) matches some permutation of the values in the range matches all expected values
+- [**`range_starts_with(`** *matchers* **`)`**](reference.md/#range_starts_with) matches values of the first elements in the range with expected values
+- [**`range_ends_with(`** *matchers* **`)`**](reference.md/#range_ends_with) matches values of the last elements in the range with expected values
+- [**`range_all_of(`** *matcher* **`)`**](reference.md/#range_all_of) matches when every element in the range matches value
+- [**`range_any_of(`** *matcher* **`)`**](reference.md/#range_any_of) matches when at least one element in the range matches value
+- [**`range_none_of(`** *matcher* **`)`**](reference.md/#range_none_of) matches when no element in the range matches value
+
+By default, the matchers are [*duck typed*](
+https://en.wikipedia.org/wiki/Duck_typing
+), i.e. they match a parameter that supports the operation. If disambiguation
+is necessary to resolve overloads, an explicit type can be specified.
+
+Example:
+
+```Cpp
+class Mock
+{
+public:
+  MAKE_MOCK1(vfunc, void(const std::vector<int>&));
+  MAKE_MOCK1(ofunc, void(const std::vector<int>&));
+  MAKE_MOCK1(ofunc, void(const std::list<int>&))
+};
+
+void test()
+{
+  Mock m;
+  ALLOW_CALL(m, vfunc(trompeloeil::range_starts_with(1,2,3)));
+  REQUIRE_CALL(m, ofunc(trompeloeil::range_all_of<std::vector<int>>(trompeloeil::ge(0)))); // const std::vector<int>& version once
+  func(&m);
+  // expectations must be met before end of scope
+}
+```
+
 
 ### <A name="matching_regular_expressions"/> Matching strings with regular expressions
 
@@ -910,7 +1168,7 @@ Example:
 class Mock
 {
 public:
-  MAKE_MOCK1(func, void(const char*));
+  MAKE_MOCK(func, auto (const char*) -> void);
 };
 
 void test()
@@ -938,8 +1196,8 @@ Example:
 class Mock
 {
 public:
-  MAKE_MOCK1(func, void(int*));
-  MAKE_MOCK2(func, void(std::unique_ptr<short>*));
+  MAKE_MOCK(func, auto (int*) -> void);
+  MAKE_MOCK(func, auto (std::unique_ptr<short>) -> void);
 };
 
 using trompeloeil::eq;
@@ -965,7 +1223,7 @@ Example:
 
 ```Cpp
 struct Mock {
-  MAKE_MOCK1(func, void(const std::string&));
+  MAKE_MOCK(func, auto (const std::string&) -> void);
 };
 
 using trompeloeil::re; // matching regular expressions
@@ -991,7 +1249,7 @@ Example:
 class Mock
 {
 public:
-  MAKE_MOCK2(func, void(const char*, size_t len));
+  MAKE_MOCK(func, auto (const char*, size_t len) -> void);
 };
 
 using trompeloeil::ne;
@@ -1046,7 +1304,7 @@ Example:
 class Mock
 {
 public:
-  MAKE_MOCK1(func, void(std::unique_ptr<int>));
+  MAKE_MOCK(func, auto (std::unique_ptr<int>) -> void);
 };
 
 using trompeloeil::ne;
@@ -1064,6 +1322,36 @@ void test()
 Above there is a requirement that the function is called with a non-null
 `std::unique_ptr<int>`, which points to a value of `3`.
 
+If the signature of the function is to a reference, you can also use
+[`std::ref()`](https://en.cppreference.com/w/cpp/utility/functional/ref) to
+bind a reference in the expectation.
+
+```Cpp
+class Mock
+{
+public:
+  MAKE_MOCK(func, auto (std::unique_ptr<int>&) -> void);
+};
+
+void func_to_test(Mock& m, std::unique_ptr<int>& ptr);
+
+void test()
+{
+  Mock m;
+  auto p = std::make_unique<int>(3);
+  {
+    REQUIRE_CALL(m, func(std::ref(p)))
+      .LR_WITH(&_1 == &p); // ensure same object, not just equal value
+    func_to_test(m, p);
+  }
+}
+```
+
+Note that the check for a matching parameter defaults to using `operator==`.
+If you want to ensure that it is the exact same object, not just one with the
+same value, you need to compare the addresses of the parameter and the
+expected value, as shown in the example above.
+
 ### <A name="matching_overloads"/> Matching calls to overloaded member functions
 
 Distinguishing between overloads is simple when using exact values to match
@@ -1080,8 +1368,8 @@ Example:
 class Mock
 {
 public:
-  MAKE_MOCK1(func, void(int*));
-  MAKE_MOCK1(func, void(char*));
+  MAKE_MOCK(func, auto (int*) -> void);
+  MAKE_MOCK(func, auto (char*) -> void);
 };
 
 using namespace trompeloeil;
@@ -1099,6 +1387,33 @@ void test()
 
 Above, each of the `func` overloads must be called once, the `int*` version with
 any pointer value at all, and the `char*` version with a non-null value.
+
+Matching overloads on constness is done by placing the expectation on
+a const or non-const object.
+
+Example:
+
+```Cpp
+class Mock
+{
+public:
+  MAKE_MOCK(func, auto (int) -> void);
+  MAKE_CONST_MOCK(func, auto (int) -> void);
+};
+
+void test()
+{
+  Mock m;
+
+  REQUIRE_CALL(m, func(3));   // non-const overload
+
+  const Mock& mc = m;
+  REQUIRE_CALL(mc, func(-3)); // const overload
+
+  m.func(3); // calls non-const overload
+  mc.func(-3); // calls const overload
+}
+```
 
 ### <A name="side_effects"/> Define side effects for matching calls
 
@@ -1118,7 +1433,7 @@ Example:
 class Dispatcher
 {
 public:
-  MAKE_MOCK1(subscribe, void(std::function<void(const std::string&)>));
+  MAKE_MOCK(subscribe, auto (std::function<void(const std::string&)>) -> void);
 };
 
 using trompeloeil::_;
@@ -1166,7 +1481,7 @@ class Dictionary
 {
 public:
   using id_t = size_t;
-  MAKE_MOCK1(lookup, std::string(id_t));
+  MAKE_MOCK(lookup, auto (id_t) -> std::string);
 };
 
 using trompeloeil::ge; // greater than or equal
@@ -1211,7 +1526,7 @@ class Dictionary
 {
 public:
   using id_t = size_t;
-  MAKE_MOCK1(lookup, const std::string&(id_t));
+  MAKE_MOCK(lookup, auto (id_t) -> const std::string&);
 };
 
 using trompeloeil::gt; // greater than or equal
@@ -1263,7 +1578,7 @@ class Dictionary
 {
 public:
   using id_t = size_t;
-  MAKE_CONST_MOCK1(lookup, const std::string&(id_t));
+  MAKE_CONST_MOCK(lookup, auto (id_t) -> const std::string&);
 };
 
 using trompeloeil::_; // matches anything
@@ -1295,7 +1610,7 @@ By default it is illegal to call any
 [mock function](reference.md/#mock_function) and you provide narrow specific
 expectations according to the needs of your test. However, sometimes it makes
 sense to have a wide-open default. That is done with the
-[exceptations](reference.md/#expectation)
+[expectations](reference.md/#expectation)
 [**`ALLOW_CALL(...)`**](reference.md/#ALLOW_CALL) and
 [**`NAMED_ALLOW_CALL(...)`**](reference.md/#NAMED_ALLOW_CALL). The difference
 between them is that **`ALLOW_CALL`** is local in nature and is only valid
@@ -1310,8 +1625,8 @@ template <typename T>
 class Allocator
 {
 public:
-  MAKE_MOCK1(allocate, T*(size_t));
-  MAKE_MOCK1(deallocate, void(T*));
+  MAKE_MOCK(allocate, auto (size_t) -> T*);
+  MAKE_MOCK(deallocate, auto (T*) -> void);
 };
 
 using trompeloeil::_;
@@ -1347,8 +1662,8 @@ template <typename T>
 class Allocator
 {
 public:
-  MAKE_MOCK1(allocate, T*(size_t));
-  MAKE_MOCK1(deallocate, void(T*));
+  MAKE_MOCK(allocate, auto (size_t) -> T*);
+  MAKE_MOCK(deallocate, auto (T*) -> void);
 };
 
 using trompeloeil::_;
@@ -1420,9 +1735,9 @@ class FileOps
 {
 public:
   using handle = int;
-  MAKE_MOCK1(open, handle(const std::string&));
-  MAKE_MOCK3(write, size_t(handle, const char*, size_t));
-  MAKE_MOCK1(close, void(handle));
+  MAKE_MOCK(open, auto (const std::string&) -> handle);
+  MAKE_MOCK(write, auto (handle, const char*, size_t) -> size_t);
+  MAKE_MOCK(close, auto (handle) -> void);
 };
 
 using trompeloeil::ne;
@@ -1466,9 +1781,9 @@ class FileOps
 {
 public:
   using handle = int;
-  MAKE_MOCK1(open, handle(const std::string&));
-  MAKE_MOCK3(write, size_t(handle, const char*, size_t));
-  MAKE_MOCK1(close, void(handle));
+  MAKE_MOCK(open, auto (const std::string&) -> handle);
+  MAKE_MOCK(write, auto (handle, const char*, size_t) -> size_t);
+  MAKE_MOCK(close, auto (handle) -> void);
 };
 
 using trompeloeil::ne;
@@ -1510,7 +1825,7 @@ sequence objects, which is a way to allow some variation in order, without
 being too lax. For a more thorough walk through, see the blog post [Sequence
 control with the Trompeloeil C\+\+14 Mocking Framework](http://playfulprogramming.blogspot.se/2015/01/sequence-control-with-trompeloeil-c.html)
 
-[**`.IN_SEQUNECE(...)`**](reference.md/#IN_SEQUENCE) can also be used on
+[**`.IN_SEQUENCE(...)`**](reference.md/#IN_SEQUENCE) can also be used on
 [**`REQUIRE_DESTRUCTION(...)`**](reference.md/#REQUIRE_DESTRUCTION) and
 [**`NAMED_REQUIRE_DESTRUCTION(...)`**](reference.md/#NAMED_REQUIRE_DESTRUCTION).
 
@@ -1518,8 +1833,9 @@ control with the Trompeloeil C\+\+14 Mocking Framework](http://playfulprogrammin
 
 By default [**`REQUIRE_CALL(...)`**](reference.md/#REQUIRE_CALL) needs exactly
 one matching call, otherwise a violation is reported. Sometimes the need is
-for something else. A modifier [**`TIMES(...)`**](reference.md/#TIMES) is used
-to change that. You can either specify an exact number of times matching calls
+for something else. The modifiers [**`TIMES(...)`**](reference.md/#TIMES-and-RT_TIMES) or
+[**`RT_TIMES(...)`**](reference.md/#TIMES-and-RT_TIMES) can be used to change that.
+You can either specify an exact number of times matching calls
 must be made, or a range of numbers.
 
 Example:
@@ -1528,7 +1844,7 @@ Example:
 class Mock
 {
 public:
-  MAKE_MOCK1(func, void(int));
+  MAKE_MOCK(func, auto (int) -> void);
 };
 
 void some_test()
@@ -1571,7 +1887,7 @@ class Mock
 {
 public:
   virtual ~Mock() {}          // virtual destructor required for deathwatched<>
-  MAKE_MOCK1(func, void(int));
+  MAKE_MOCK(func, auto (int) -> void);
 }
 
 template <typename T>
@@ -1644,9 +1960,8 @@ the values are printed using their
 if available, or hexadecimal dumps otherwise. If this is not what you want, you
 can provide your own output formatting used solely for testing.
 
-The simple way to do this is to specialize a function template
-[`print(std::ostream&, const T&)`](reference.md/#print) in namespace
-`trompeloeil` for your type `T`.
+The simple way to do this is to specialize a template [`printer<T>`](reference.md/#printer),
+in namespace `trompeloeil`, and its static member function `print`, for your type `T`.
 
 Example:
 
@@ -1658,17 +1973,77 @@ class char_buff : public std::vector<char>
 
 namespace trompeloeil {
   template <>
-  void print(std::ostream& os, const char_buff& b)
+  struct printer<char_buff>
   {
-    os << b.size() << "#{ ";
-    for (auto v : b) { os << int(v) << " ";
-    os << "}";
-  }
+    static void print(std::ostream& os, const char_buff& b)
+    {
+      os << b.size() << "#{ ";
+      for (auto v : b) { os << int(v) << " "; }
+      os << "}";
+    }
+  };
 }
 ```
 
 Any reports involving the `char_buff` above will be printed using the
 `trompeloeil::print<char_buff>(...)` function, showing the size and integer values.
+
+Note that partial specializations also work. Example:
+
+```Cpp
+template <typename T>
+class buff : public std::vector<T>
+{
+  ...
+};
+
+namespace trompeloeil {
+  template <typename T>
+  struct printer<buff<T>>
+  {
+    static void print(std::ostream& os, const buff<T>& b)
+    {
+      os << b.size() << "#{ ";
+      for (auto v : b) { os << v << " "; }
+      os << "}";
+    }
+  };
+}
+```
+
+The full type signature for the `printer` template is
+```C++
+template <typename T, typename = void>
+struct printer
+{
+    static void print(std::ostream& os, const T&);  
+};
+```
+
+The second template parameter can be used for
+[SFINAE](https://en.cppreference.com/w/cpp/language/sfinae)
+constraints  on the `T`. As an example, every type that has a formatter for
+the  excellent [`fmt`](https://fmt.dev/latest/index.html) library, can be
+printed using a custom SFINAE printer like:
+
+```C++
+namespace trompeloeil {
+
+  template<typename T>
+  struct printer<T, typename std::enable_if_t<fmt::is_formattable<T>::value>>
+  {
+    static void print(std::ostream& os, const T& t) { os << fmt::format("{}", t); }
+  };
+
+}
+```
+
+Note that the result of the type expression for the 2nd type in the partial
+specialization **must** be `void`.
+
+**NOTE!** Older documentation refers to specializing a function
+[`trompeloeil::print(sd::ostream&, T const&)`](reference.md/#print). This still works, but has the
+disadvantage that partial specializations are not possible.
 
 ## <A name="tracing"/> Tracing mocks
 
@@ -1704,8 +2079,8 @@ Example:
 class Mock
 {
 public:
-  MAKE_MOCK1(create, int(const std::string&));
-  MAKE_MOCK1(func, std::string(int));
+  MAKE_MOCK(create, auto (const std::string&) -> int);
+  MAKE_MOCK(func, auto (int) -> std::string);
 };
 
 using trompeloeil::_;
@@ -1798,7 +2173,7 @@ values. It is implemented using the standard library algorithm
 allowing a parameter to match any of a set of values.
 
 To create a matcher, you provide a function that calls
-[**`trompeleil::make_matcher<Type>(...)`**](reference.md/#make_matcher).
+[**`trompeloeil::make_matcher<Type>(...)`**](reference.md/#make_matcher).
 
 Below is the code for the function `any_of(std::initializer_list<int>)`
 which creates the matcher.
@@ -1828,7 +2203,7 @@ which creates the matcher.
 
       // stored value
       std::vector<int>(elements)
-    )
+    );
   }
 ```
 
@@ -1848,7 +2223,7 @@ Example usage:
 class Mock
 {
 public:
-  MAKE_MOCK1(func, void(int));
+  MAKE_MOCK(func, auto (int) -> void);
 };
 
 void test()
@@ -1962,9 +2337,9 @@ Here's an example of the usage.
 ```Cpp
   struct C
   {
-    MAKE_MOCK1(func, void(int));
-    MAKE_MOCK1(func, void(std::string&&));
-    MAKE_MOCK1(func2, void(std::vector<int> const&);
+    MAKE_MOCK(func, auto (int) -> void);
+    MAKE_MOCK(func, auto (std::string&&) -> void);
+    MAKE_MOCK(func2, auto (std::vector<int> const&) -> void);
   };
 
   void test()
@@ -2197,7 +2572,7 @@ Example usage:
 class Mock
 {
 public:
-  MAKE_MOCK1(func, void(int));
+  MAKE_MOCK(func, auto (int) -> void);
 };
 
 void test()

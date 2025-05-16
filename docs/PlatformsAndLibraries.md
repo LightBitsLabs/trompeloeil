@@ -1,5 +1,6 @@
 # Platform and library support for Trompeloeil
 
+<!-- no toc -->
 - [Using libc\+\+ with Trompeloeil](#using_libcxx)
 - [Using sanitizers with Trompeloeil](#using_sanitizers)
 - [Compiler versions in sample Linux distributions](#compilers_in_distributions)
@@ -7,11 +8,16 @@
     - [In summary](#ubuntu_summary)
     - [In detail](#ubuntu_detail)
   - [Fedora](#compilers_in_fedora)
+- [Tested configurations](#tested_configurations)
 - [Testing Trompeloeil on Artful Aardvark (Ubuntu 17.10)](#testing_on_artful)
-  - [`std::to_string()` is not defined for some versions of `libstd++-v3`](#defect_to_string)
+  - [`std::to_string()` is not defined for some versions of `libstdc++-v3`](#defect_to_string)
   - [Glibc 2.26 no longer supplies `xlocale.h`](#defect_xlocale)
   - [Glibc 2.26 `std::signbit()` broken for GCC compilers < 6](#defect_signbit)
   - [Conclusion](#artful_conclusion)
+- [Supporting incomplete standard libraries](#incomplete_stdlib)
+  - [Replacing `std::recursive_mutex`](#custom_recursive_mutex)
+  - [Replacing `std::atomic<T>`](#custom_std_atomic)
+  - [Replacing `std::unique_lock<T>`](#custom_std_unique_lock)
 
 ## <A name="using_libcxx"/> Using libc\+\+ with Trompeloeil
 
@@ -150,10 +156,10 @@ g++-6           main                        main                        ports   
 g++-7           main                        main                        main                main                TODO
                 N/A                         N/A                         N/A                 7.2.0-8ubuntu3      TODO
 
-                trusty-updates              xenial-updates              zenial-updates                          TODO
+                trusty-updates              xenial-updates              xenial-updates                          TODO
                 N/A                         N/A                         N/A                                     TODO
 
-                trusty-backports            xenial-backports            zenial-backports                        TODO
+                trusty-backports            xenial-backports            xenial-backports                        TODO
                 N/A                         N/A                         N/A                                     TODO
 
 
@@ -303,6 +309,145 @@ libcxx-devel    3.9.1-1.fc25                4.0.1-3.fc26                4.0.1-3.
 Table first compiled: 28 October 2017
 Last updated: 9 November 2017
 
+## <A name="tested_configurations"/> Tested configurations
+
+Before release, Trompeloeil is tested with the following configurations
+of compiler, language dialect, and standard library.
+
+### GCC
+
+Last updated: 3 June 2019
+
+Key:
+
+- `N/A`: The combination `g++-4.8/c++11/libc++` leads to
+  compile errors and is not currently supported.  Further investigation
+  may change this outcome.
+- `--`: The version of `libstdc++-v3` lacks a definition of the
+  `_GLIBCXX_RELEASE` macro.
+- `stdc++` means `libstdc++-v3` from GCC.
+- `c++` means `libc++` from Clang.
+
+`g++-latest` means the "live at head" build of `g++`.
+
+```text
+Compiler        Mode      stdc++                            c++
+                -std=     __GLIBCXX__   _GLIBCXX_RELEASE    _LIBCPP_VERSION
+----------      ----      ------------------------------    ---------------
+g++-4.8         c++11     20150623      --                  N/A
+
+
+g++-4.9         c++11     20160726      --                  8000
+                c++14
+
+g++-5           c++11     20171010      --                  8000
+                c++14
+                c++17
+
+g++-6           c++11     20181026      --                  8000
+                c++14
+                c++17
+
+
+g++-7           c++11     20190326      7                   8000
+                c++14
+                c++17
+
+
+g++-8           c++11     20190406      8                   8000
+                c++14
+                c++17
+                c++2a
+
+
+g++-9           c++11     20190402      9                   8000
+                c++14
+                c++17
+                c++2a
+
+
+g++-latest      c++11     20190421      9                   8000
+                c++14
+                c++17
+                c++2a
+```
+
+### Clang
+
+`clang++-latest` means the "live at head" version of `clang++`.
+
+```text
+Compiler        Mode      stdc++                            c++
+                -std=     __GLIBCXX__   _GLIBCXX_RELEASE    _LIBCPP_VERSION
+----------      ----      ------------------------------    ---------------
+clang++-3.5     c++11     20190326      7                   1101
+                c++14
+
+
+clang++-3.6     c++11     20190326      7                   1101
+                c++14
+
+
+clang++-3.7     c++11     20190326      7                   3700
+                c++14
+
+
+clang++-3.8     c++11     20190326      7                   3800
+                c++14
+
+
+clang++-3.9     c++11     20190402      9                   3900
+                c++14
+
+
+clang++-4.0     c++11     20190402      9                   4000
+                c++14
+
+
+clang++-5.0     c++11     20190402      9                   5000
+                c++14
+                c++17
+                c++2a
+
+
+clang++-6.0     c++11     20190402      9                   6000
+                c++14
+                c++17
+                c++2a
+
+
+clang++-7       c++11     20190402      9                   7000
+                c++14
+                c++17
+                c++2a
+
+
+clang++-8       c++11     20190402      9                   8000
+                c++14
+                c++17
+                c++2a
+
+
+clang++-latest  c++11     20190402      9                   9000
+                c++14
+                c++17
+                c++2a
+```
+
+### Microsoft Visual Studio
+
+Last update: 3 June 2019
+
+Tested with Visual Studio Community 2019 16.1.1 .
+
+```text
+Platform Toolset            Configuration   Platform
+-------------------------   -------------   --------
+Visual Studio 2015 (v140)   Debug           x64
+Visual Studio 2017 (v141)   Release         x86
+Visual Studio 2019 (v142)
+```
+
 ## <A name="testing_on_artful"/> Testing Trompeloeil on Artful Aardvark (Ubuntu 17.10)
 
 The release of Artful Aardvark (Ubuntu 17.10) contains a number of issues
@@ -316,7 +461,7 @@ just `g++-7` with `libstdc++-v3` - do not have the issues described below,
 but this is rather a narrow list for testing Trompeloeil on its
 supported compilers and libraries.
 
-### <A name="defect_to_string"/> `std::to_string()` is not defined for some versions of `libstd++-v3`
+### <A name="defect_to_string"/> `std::to_string()` is not defined for some versions of `libstdc++-v3`
 
 Affects: `libstdc++-v3` from these packages
 
@@ -381,3 +526,130 @@ A better strategy may be to build GLIBC, GCC 4.8, GCC 5.x, and `libc++`
 from source and use these to build your software.  Then consider
 contributing your build to the Ubuntu Community; you just might be the
 "support" in "community supported".
+
+## <A name="incomplete_stdlib"/> Supporting incomplete standard libraries
+
+Some platforms, especially MCUs with RTOS, only have partial support for the
+standard library `<atomic>` and `<mutex>` headers used by trompeloeil.
+In many cases, it is possible to provide shims or custom implementations
+of the necessary parts.
+
+### <A name="custom_recursive_mutex"/> Replacing `std::recursive_mutex`
+
+To use your own recursive mutex, define `TROMPELOEIL_CUSTOM_RECURSIVE_MUTEX`
+either before including the Trompeloeil header
+(e.g. `#define TROMPELOEIL_CUSTOM_RECURSIVE_MUTEX`) or as preprocessor
+definition (e.g. GCC: `-DTROMPELOEIL_CUSTOM_RECURSIVE_MUTEX`).
+
+Now define in one translation unit your custom recursive mutex for trompeloeil.
+
+```cpp
+namespace trompeloeil {
+
+std::unique_ptr<custom_recursive_mutex> create_custom_recursive_mutex() {
+
+  class custom : public custom_recursive_mutex {
+    void lock() override { mtx.lock(); }
+    void unlock() override { mtx.unlock(); }
+
+  private:
+    mylib::recursive_mutex mtx;
+  };
+
+  return std::make_unique<custom>();
+}
+
+}
+```
+
+### <A name="custom_std_atomic"/> Replacing `std::atomic<T>`
+
+To use your own implementation of `std::atomic<T>`,
+define `TROMPELOEIL_CUSTOM_ATOMIC` and make sure there is a header
+`trompeloeil/custom_atomic.hpp` somewhere in the include search path.
+
+This header should contain a class template `trompeloeil::atomic<T>`
+that implements (part of) the interface of `std::atomic<T>`:
+
+```cpp
+namespace trompeloeil
+{
+template <typename T>
+class atomic
+{
+public:
+  atomic() : m_atomic()
+  {
+  }
+
+  explicit atomic(const T initial) : m_atomic(initial)
+  {
+  }
+
+  T operator=(T desired)
+  {
+    m_atomic.store(desired);
+    return m_atomic.load();
+  }
+
+  operator T() const
+  {
+    return m_atomic.load();
+  }
+
+private:
+  mylib::atomic<T> m_atomic;
+};
+}
+```
+
+### <A name="custom_std_unique_lock"/> Replacing `std::unique_lock<T>`
+
+To use your own implementation of `std::unique_lock<T>`,
+define `TROMPELOEIL_CUSTOM_UNIQUE_LOCK` and make sure there is a header
+`trompeloeil/custom_unique_lock.hpp` somewhere in the include search path.
+
+This header should contain a class template `trompeloeil::unique_lock<T>`
+that implements (part of) the interface of `std::unique_lock<T>`:
+
+```cpp
+namespace trompeloeil
+{
+template <typename Mutex>
+class unique_lock
+{
+public:
+  unique_lock() noexcept : m_mutex(nullptr)
+  {
+  }
+
+  explicit unique_lock(Mutex& mutex) : m_mutex(&mutex)
+  {
+    m_mutex->lock();
+  }
+
+  unique_lock(const unique_lock&) = delete;
+  unique_lock(unique_lock&& other) noexcept : m_mutex(nullptr)
+  {
+    std::swap(other.m_mutex, m_mutex);
+  }
+
+  unique_lock& operator=(const unique_lock&) = delete;
+  unique_lock& operator=(unique_lock&& other) noexcept
+  {
+    std::swap(other.m_mutex, m_mutex);
+  }
+
+  ~unique_lock()
+  {
+    if (m_mutex)
+    {
+      m_mutex->unlock();
+    }
+  }
+
+private:
+  Mutex* m_mutex;
+};
+}
+```

@@ -15,7 +15,21 @@
 #ifndef COMPILING_TESTS_HPP_
 #define COMPILING_TESTS_HPP_
 
+#include <cstddef>
+struct QCharIsh {
+  constexpr QCharIsh(int) noexcept;
+};
+
+constexpr bool operator==(std::nullptr_t,QCharIsh) noexcept;
+constexpr bool operator==(QCharIsh,std::nullptr_t) noexcept;
+
 #define TROMPELOEIL_SANITY_CHECKS
+
+#if defined(_WIN32)
+#include <Unknwn.h>
+#undef interface
+#endif
+
 #include <trompeloeil.hpp>
 
 #include <algorithm>
@@ -31,9 +45,7 @@
 #if defined(_MSC_VER)
 
 #define TROMPELOEIL_TEST_REGEX_FAILURES 1
-#define TROMPELOEIL_TEST_OVERLOAD_FAILURES 1
-#define TROMPELOEIL_TEST_NEG_MATCHER_FAILURES 1
-#define TROMPELOEIL_TEST_RVALUE_REFERENCE_FAILURES 1
+#define TROMPELOEIL_TEST_REGEX_BOL_EOL_FAILURES 1
 
 #else /* defined(_MSC_VER) */
 
@@ -43,6 +55,16 @@
 #define TROMPELOEIL_USING_LIBSTDCPP 1
 #else
 #define TROMPELOEIL_USING_LIBSTDCPP 0
+#endif
+
+// Detect if using libc++
+#if defined(_LIBCPP_VERSION)
+// Using libc++
+#define TROMPELOEIL_USING_LIBCPP 1
+#define TROMPELOEIL_LIBCPP_VERSION _LIBCPP_VERSION
+#else
+#define TROMPELOEIL_USING_LIBCPP 0
+#define TROMPELOEIL_LIBCPP_VERSION 0
 #endif
 
 /*
@@ -62,119 +84,32 @@
 #endif /* !defined(TROMPELOEIL_TEST_REGEX_FAILURES) */
 
 /*
- * GCC 4.8 has issues with overloading that affects wildcard
- * and duck_typed_matcher.
+ * The implementation of <regex> in libc++ 1.1.1 (1101),
+ * used with Clang++ 3.5.x and Clang++ 3.6.x, is not complete for
+ * std::regex_constants::match_not_bol and
+ * std::regex_constants::match_not_eol.
+ *
+ * For this reason tests using these constants will be
+ * disabled when using this version of the library,
+ * or earlier.
  */
-#if !defined(TROMPELOEIL_TEST_OVERLOAD_FAILURES)
+#if !defined(TROMPELOEIL_TEST_REGEX_BOL_EOL_FAILURES)
 
-#if TROMPELOEIL_GCC && TROMPELOEIL_GCC_VERSION < 40900
-#define TROMPELOEIL_TEST_OVERLOAD_FAILURES 0
+#if TROMPELOEIL_LIBCPP_VERSION > 1101
+#define TROMPELOEIL_TEST_REGEX_BOL_EOL_FAILURES 1
 #else
-#define TROMPELOEIL_TEST_OVERLOAD_FAILURES 1
+#define TROMPELOEIL_TEST_REGEX_BOL_EOL_FAILURES 0
 #endif
 
-#endif /* !defined(TROMPELOEIL_TEST_OVERLOAD_FAILURES) */
-
-/*
- * GCC 4.8 has issues with overloading that affects neg_matcher.
- */
-#if !defined(TROMPELOEIL_TEST_NEG_MATCHER_FAILURES)
-
-#if TROMPELOEIL_GCC && TROMPELOEIL_GCC_VERSION < 40900
-#define TROMPELOEIL_TEST_NEG_MATCHER_FAILURES 0
-#else
-#define TROMPELOEIL_TEST_NEG_MATCHER_FAILURES 1
-#endif
-
-#endif /* !defined(TROMPELOEIL_TEST_NEG_MATCHER_FAILURES) */
-
-/*
- * GCC 4.8 has issues with user-defined conversions to rvalue references
- * that affects duck_typed_matcher and wildcard.
- */
-#if !defined(TROMPELOEIL_TEST_RVALUE_REFERENCE_FAILURES)
-
-#if TROMPELOEIL_GCC && TROMPELOEIL_GCC_VERSION < 40900
-#define TROMPELOEIL_TEST_RVALUE_REFERENCE_FAILURES 0
-#else
-#define TROMPELOEIL_TEST_RVALUE_REFERENCE_FAILURES 1
-#endif
-
-#endif /* !defined(TROMPELOEIL_TEST_RVALUE_REFERENCE_FAILURES) */
+#endif /* !defined(TROMPELOEIL_TEST_REGEX_BOL_EOL_FAILURES) */
 
 #endif /* !defined(_MSC_VER) */
 
-namespace detail
+
+
+struct not_default_constructible
 {
-  /*
-   * Use compiler-version independent make_unique.
-   */
-  using ::trompeloeil::detail::make_unique;
-
-  // std::uncaught_exception() is deprecated in C++17.
-  inline
-  bool
-  there_are_uncaught_exceptions()
-  {
-    /*
-     * GCC 5.x supports specifying -std=c++17 but libstdc++-v3 for
-     * GCC 5.x doesn't declare std::uncaught_exceptions().
-     * Rather than detect what version of C++ Standard Library
-     * is in use, we equate the compiler version with the library version.
-     *
-     * Some day this test will based on __cpp_lib_uncaught_exceptions.
-     */
-#   if (TROMPELOEIL_CPLUSPLUS > 201402L) && \
-       ((!TROMPELOEIL_GCC) || \
-        (TROMPELOEIL_GCC && TROMPELOEIL_GCC_VERSION >= 60000))
-
-    return std::uncaught_exceptions() > 0;
-
-#   else
-
-    return std::uncaught_exception();
-
-#   endif
-  }
-
-} /* namespace detail */
-
-class reported {};
-
-struct report
-{
-  trompeloeil::severity s;
-  const char           *file;
-  unsigned long         line;
-  std::string           msg;
-};
-
-extern std::vector<report> reports;
-
-namespace trompeloeil
-{
-  template <>
-  struct reporter<specialized>
-  {
-    static void send(severity s,
-                     char const* file,
-                     unsigned long line,
-                     char const* msg)
-    {
-      reports.push_back(report{s, file, line, msg});
-      if (s == severity::fatal && !::detail::there_are_uncaught_exceptions())
-      {
-        throw reported{};
-      }
-    }
-  };
-}
-
-struct Fixture
-{
-  Fixture() {
-    reports.clear();
-  }
+  not_default_constructible(int) {}
 };
 
 struct uncopyable
@@ -221,7 +156,7 @@ struct mi : trompeloeil::mock_interface<interface>
   IMPLEMENT_MOCK1(func);
   IMPLEMENT_CONST_MOCK1(cfunc);
   IMPLEMENT_MOCK3(func3);
-  IMPLEMENT_CONST_MOCK3(func3);
+  IMPLEMENT_CONST_MOCK3(func3, noexcept);
 };
 
 struct uncomparable { };
@@ -241,9 +176,22 @@ struct uncomparable_string {
   std::string s;
 };
 
+class null_constructible {
+public:
+  null_constructible(int* p_)  : p(p_) {}
+  bool operator==(null_constructible rh) const { return *p == *rh.p; }
+  friend std::ostream& operator<<(std::ostream& os, const null_constructible&)
+  {
+    return os << "null_constructible";
+  }
+private:
+  int* p;
+};
+
 struct null_comparable {
   void* p;
   bool operator==(std::nullptr_t) const noexcept { return !p; }
+  friend bool operator==(std::nullptr_t, null_comparable n) { return !n.p; }
   friend std::ostream& operator<<(std::ostream& os, const null_comparable&)
   {
     return os << "null_comparable";
@@ -252,6 +200,7 @@ struct null_comparable {
 
 struct pseudo_null_comparable {
   void operator==(std::nullptr_t) const {} // looking at you, boost::variant<>!
+  friend void operator==(std::nullptr_t, pseudo_null_comparable) {}
   friend
   std::ostream& operator<<(std::ostream& os, const pseudo_null_comparable&)
   {
@@ -290,6 +239,7 @@ public:
   MAKE_MOCK1(getter, unmovable&(unmovable&), override);
   MAKE_MOCK1(getter, int(int), override);
   MAKE_MOCK2(getter, void(int, std::string&), override);
+  MAKE_MOCK0(no_default_return, not_default_constructible());
   using C::p_;
 };
 
@@ -342,6 +292,11 @@ public:
   MAKE_MOCK1(func_ustr, void(const uncomparable_string&));
   MAKE_MOCK1(func_ustrv, void(uncomparable_string));
   MAKE_MOCK1(func_f, void(std::function<void()>));
+  MAKE_MOCK1(func_tupv, void(std::tuple<int>));
+  MAKE_MOCK1(func_tupr, void(std::tuple<int>&));
+  MAKE_MOCK1(func_tuprr, void(std::tuple<int>&&));
+  MAKE_MOCK1(func_tupcr, void(const std::tuple<int>&));
+  MAKE_MOCK1(func_tupcrr, void(const std::tuple<int>&&x));
   int m;
 };
 
@@ -374,6 +329,9 @@ public:
   MAKE_MOCK1(str, void(std::string));
   MAKE_MOCK1(overload, void(char const*));
   MAKE_MOCK1(overload, void(std::string const&));
+#if defined(__cpp_lib_string_view)
+  MAKE_MOCK1(string_view, void(std::string_view));
+#endif
 };
 
 class C_ptr
@@ -383,6 +341,7 @@ public:
   MAKE_MOCK1(uptr, void(std::unique_ptr<int>));
   MAKE_MOCK1(uptrrr, void(std::unique_ptr<int>&&));
   MAKE_MOCK1(uptrcr, void(std::unique_ptr<int> const&));
+  MAKE_MOCK1(uptrr, void(std::unique_ptr<int>&));
   MAKE_MOCK1(strptr, void(std::string*));
   MAKE_MOCK1(pp, void(int**));
   MAKE_MOCK1(overloaded, void(int**));
@@ -455,7 +414,7 @@ public:
 };
 
 struct unknown {
-  const char values[4] = { 0x10, 0x11, 0x12, 0x13 };
+  const char values[4] = { 0x01, 0x02, 0x12, 0x13 };
 };
 
 namespace nn
@@ -474,6 +433,15 @@ namespace nn
     os << "nn::print(TestOutput{" << p.n << "}";
   }
 
+  template <typename T>
+  struct wrapped
+  {
+    T value;
+    friend std::ostream& operator<<(std::ostream& os, const wrapped<T>& w)
+    {
+      return os << "wrapped(" << w.value << ')';
+    }
+  };
 } // namespace nn
 
 namespace trompeloeil
@@ -486,10 +454,34 @@ namespace trompeloeil
 
 } // namespace trompeloeil
 
+struct my_printable
+{
+    int x;
+};
+
+struct my_input_range
+{
+  using iterator = std::vector<int>::iterator;
+
+  std::vector<int> data{};
+
+  iterator begin()
+  {
+    return data.begin();
+  }
+
+  iterator end()
+  {
+    return data.end();
+  }
+};
+
 class TestOutputMock
 {
 public:
   MAKE_MOCK1(func, void(nn::TestOutput));
+  MAKE_MOCK1(func, void(nn::wrapped<int>));
+  MAKE_MOCK1(func, void(my_printable));
 };
 
 class none
@@ -569,6 +561,9 @@ struct all_if
                     I<9>,I<10>,I<11>,I<12>,I<13>,I<14>) const = 0;
   virtual void cf15(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
                     I<9>,I<10>,I<11>,I<12>,I<13>,I<14>,I<15>) const = 0;
+
+  virtual std::tuple<int, float, double> f1t(I<1>) = 0;
+  virtual std::pair<int, float> cf1t(I<1>) const = 0;
 };
 
 struct all_mock_if : public all_if
@@ -621,6 +616,8 @@ struct all_mock_if : public all_if
   MAKE_CONST_MOCK15(cf15, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
     I<9>,I<10>,I<11>,I<12>,I<13>,I<14>,I<15>), override);
 
+  MAKE_MOCK1(f1t, (std::tuple<int, float, double>(I<1>)), override);
+  MAKE_CONST_MOCK1(cf1t, (std::pair<int, float>(I<1>)), override);
 };
 
 struct all_mock
@@ -673,6 +670,115 @@ struct all_mock
   MAKE_CONST_MOCK15(cf15, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
     I<9>,I<10>,I<11>,I<12>,I<13>,I<14>,I<15>));
 
+  MAKE_MOCK1(f1t, (std::tuple<int, float, double>(I<1>)));
+  MAKE_CONST_MOCK1(cf1t, (std::pair<int, float>(I<1>)));
 };
+
+struct trailing_mock
+{
+#if TROMPELOEIL_HAS_VA_OPT
+  MAKE_MOCK(f, auto ()->int);
+#endif
+  MAKE_MOCK(f, auto(I<1>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>)->int, noexcept);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>,I<12>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>,I<12>,I<13>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>,I<12>,I<13>,I<14>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>,I<12>,I<13>,I<14>,I<15>)->int);
+  MAKE_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>,I<12>,I<13>,I<14>,I<15>,I<16>)->int);
+#if TROMPELOEIL_HAS_VA_OPT
+  MAKE_CONST_MOCK(f, auto ()->int);
+#endif
+  MAKE_CONST_MOCK(f, auto(I<1>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>)->int, noexcept);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>,I<12>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>,I<12>,I<13>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>,I<12>,I<13>,I<14>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>,I<12>,I<13>,I<14>,I<15>)->int);
+  MAKE_CONST_MOCK(f, auto (I<1>, I<2>,I<3>,I<5>,I<6>,I<7>,I<8>,I<9>,I<10>,I<11>,I<12>,I<13>,I<14>,I<15>,I<16>)->int);
+};
+
+#if defined(_WIN32)
+struct idispatch_mock : public trompeloeil::mock_interface<IDispatch> {
+  IMPLEMENT_STDMETHOD_MOCK0(AddRef);
+  IMPLEMENT_STDMETHOD_MOCK0(Release);
+  MAKE_STDMETHOD_MOCK2(QueryInterface, HRESULT(REFIID, void **), override);
+  MAKE_STDMETHOD_MOCK(GetTypeInfoCount, auto (UINT*)->HRESULT, override);
+  IMPLEMENT_STDMETHOD_MOCK3(GetTypeInfo);
+  IMPLEMENT_STDMETHOD_MOCK5(GetIDsOfNames);
+  IMPLEMENT_STDMETHOD_MOCK8(Invoke);
+};
+
+struct all_stdcall_if
+{
+  virtual ~all_stdcall_if() = default;
+  virtual void STDMETHODCALLTYPE f0() = 0;
+  virtual void STDMETHODCALLTYPE f1(I<1>) = 0;
+  virtual void STDMETHODCALLTYPE f2(I<1>, I<2>) = 0;
+  virtual void STDMETHODCALLTYPE f3(I<1>, I<2>, I<3>) = 0;
+  virtual void STDMETHODCALLTYPE f4(I<1>, I<2>, I<3>, I<4>) = 0;
+  virtual void STDMETHODCALLTYPE f5(I<1>, I<2>, I<3>, I<4>, I<5>) = 0;
+  virtual void STDMETHODCALLTYPE f6(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>) = 0;
+  virtual void STDMETHODCALLTYPE f7(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>) = 0;
+  virtual void STDMETHODCALLTYPE f8(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>) = 0;
+  virtual void STDMETHODCALLTYPE f9(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+                  I<9>) = 0;
+  virtual void STDMETHODCALLTYPE f10(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+                   I<9>,I<10>) = 0;
+  virtual void STDMETHODCALLTYPE f11(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+                   I<9>,I<10>,I<11>) = 0;
+  virtual void STDMETHODCALLTYPE f12(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+                   I<9>,I<10>,I<11>,I<12>) = 0;
+  virtual void STDMETHODCALLTYPE f13(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+                   I<9>,I<10>,I<11>,I<12>,I<13>) = 0;
+  virtual void STDMETHODCALLTYPE f14(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+                   I<9>,I<10>,I<11>,I<12>,I<13>,I<14>) = 0;
+  virtual void STDMETHODCALLTYPE f15(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+                   I<9>,I<10>,I<11>,I<12>,I<13>,I<14>,I<15>) = 0;
+};
+
+struct all_stdcall_mock_if : public all_stdcall_if
+{
+  MAKE_STDMETHOD_MOCK0(f0, void(), override);
+  MAKE_STDMETHOD_MOCK1(f1, void(I<1>), override);
+  MAKE_STDMETHOD_MOCK2(f2, void(I<1>, I<2>), override);
+  MAKE_STDMETHOD_MOCK3(f3, void(I<1>, I<2>, I<3>), override);
+  MAKE_STDMETHOD_MOCK4(f4, void(I<1>, I<2>, I<3>, I<4>), override);
+  MAKE_STDMETHOD_MOCK5(f5, void(I<1>, I<2>, I<3>, I<4>, I<5>), override);
+  MAKE_STDMETHOD_MOCK6(f6, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>), override);
+  MAKE_STDMETHOD_MOCK7(f7, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>), override);
+  MAKE_STDMETHOD_MOCK8(f8, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>), override);
+  MAKE_STDMETHOD_MOCK9(f9, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+    I<9>), override);
+  MAKE_STDMETHOD_MOCK10(f10, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+    I<9>,I<10>), override);
+  MAKE_STDMETHOD_MOCK11(f11, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+    I<9>,I<10>,I<11>), override);
+  MAKE_STDMETHOD_MOCK12(f12, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+    I<9>,I<10>,I<11>,I<12>), override);
+  MAKE_STDMETHOD_MOCK13(f13, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+    I<9>,I<10>,I<11>,I<12>,I<13>), override);
+  MAKE_STDMETHOD_MOCK14(f14, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+    I<9>,I<10>,I<11>,I<12>,I<13>,I<14>), override);
+  MAKE_STDMETHOD_MOCK15(f15, void(I<1>, I<2>, I<3>, I<4>, I<5>, I<6>, I<7>, I<8>,
+    I<9>,I<10>,I<11>,I<12>,I<13>,I<14>,I<15>), override);
+};
+#endif
 
 #endif /* !COMPILING_TESTS_HPP_ */

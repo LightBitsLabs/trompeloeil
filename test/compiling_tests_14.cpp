@@ -2,6 +2,7 @@
  * Trompeloeil C++ mocking framework
  *
  * Copyright Björn Fahller 2014-2018
+ * Copyright Tore Martin Hagen 2019
  *
  *  Use, modification and distribution is subject to the
  *  Boost Software License, Version 1.0. (See accompanying
@@ -11,13 +12,19 @@
  * Project home: https://github.com/rollbear/trompeloeil
  */
 
-#define TROMPELOEIL_SANITY_CHECKS
-#include <trompeloeil.hpp>
-#include <catch.hpp>
+#include "compiling_tests.hpp"
+#include "test_reporter.hpp"
+
+#if defined(CATCH2_VERSION) && CATCH2_VERSION == 3
+#include <catch2/catch_test_macros.hpp>
+#else
+#include <catch2/catch.hpp>
+#endif
 
 #include <algorithm>
 #include <cstddef>
 #include <iostream>
+#include <list>
 #include <map>
 #include <memory>
 #include <regex>
@@ -26,7 +33,6 @@
 #include <utility>
 #include <vector>
 
-#include "compiling_tests.hpp"
 
 #if TROMPELOEIL_CPLUSPLUS > 201103L
 
@@ -193,7 +199,7 @@ TEST_CASE_METHOD(
   }
   catch (reported)
   {
-    auto re = R":(Sequence mismatch.*\"seq2\".*matching.*obj.func\(_,_\).*has obj.count\(\) at.*first):";
+    auto re = R":(Sequence mismatch.*\"seq2\".*matching.*obj.func\(_,_\).*\n.*has obj.count\(\) at.*first):";
     auto& msg = reports.front().msg;
     INFO("msg=" << msg);
     REQUIRE(std::regex_search(msg, std::regex(re)));
@@ -259,7 +265,7 @@ TEST_CASE_METHOD(
   catch (reported)
   {
     REQUIRE(!reports.empty());
-    auto re = R":(Sequence mismatch.*\"seq\".*matching.*obj2.count\(\).*has obj2\.func\(_,_\) at.*first):";
+    auto re = R":(Sequence mismatch.*\"seq\".*matching.*obj2.count\(\).*\n.*has obj2\.func\(_,_\) at.*first):";
     REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
   }
 }
@@ -299,7 +305,7 @@ TEST_CASE_METHOD(
   catch (reported)
   {
     REQUIRE(!reports.empty());
-    auto re = R":(Sequence mismatch.*seq2.*of obj2\.count\(\).*has obj1.count\(\).*first):";
+    auto re = R":(Sequence mismatch.*seq2.*of obj2\.count\(\).*\n.*has obj1.count\(\).*first):";
     REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
   }
 }
@@ -388,7 +394,7 @@ TEST_CASE_METHOD(
   catch (reported)
   {
     REQUIRE(reports.size() == 1U);
-    auto re = R":(Sequence mismatch.*seq1.*of obj1\.func\(_, _\).*has obj1\.count\(\).*first):";
+    auto re = R":(Sequence mismatch.*seq1.*of obj1\.func\(_, _\).*\n.*has obj1\.count\(\).*first):";
     INFO("report=" << reports.front().msg);
     REQUIRE(std::regex_search(reports.front().msg,  std::regex(re)));
     auto& first = reports.front();
@@ -431,15 +437,16 @@ TEST_CASE_METHOD(
 {
   mock_c obj;
 
-  std::unique_ptr<trompeloeil::expectation> e[2];
+  std::unique_ptr<trompeloeil::expectation> e0;
+  std::unique_ptr<trompeloeil::expectation> e1;
   {
 
     trompeloeil::sequence s;
 
-    e[0] = NAMED_REQUIRE_CALL(obj, getter(ANY(int)))
+    e0 = NAMED_REQUIRE_CALL(obj, getter(ANY(int)))
       .IN_SEQUENCE(s)
       .RETURN(0);
-    e[1] = NAMED_REQUIRE_CALL(obj, foo(_))
+    e1 = NAMED_REQUIRE_CALL(obj, foo(_))
       .IN_SEQUENCE(s);
   }
 
@@ -481,6 +488,44 @@ TEST_CASE_METHOD(
   REQUIRE(seq.is_completed());
 }
 
+TEST_CASE_METHOD(
+  Fixture,
+  "C++14: Sequence mismatch on a required call after an unsatisfied allowed call reports both",
+  "[C++14][sequences]")
+{
+  mock_c obj;
+  trompeloeil::sequence seq;
+
+  ALLOW_CALL(obj, count())
+    .IN_SEQUENCE(seq)
+    .RETURN(1);
+  ALLOW_CALL(obj, getter(1))
+    .IN_SEQUENCE(seq)
+    .RETURN(1);
+  REQUIRE_CALL(obj, func(_, _))
+    .IN_SEQUENCE(seq);
+
+  REQUIRE_CALL(obj, getter(3))
+    .IN_SEQUENCE(seq)
+    .RETURN(1);
+
+
+  try {
+    obj.getter(3);
+    FAIL("didn't throw");
+  }
+  catch (reported)
+  {
+    REQUIRE(reports.size() == 1U);
+    auto re = R":(Sequence mismatch.*seq.*of obj\.getter\(3\).*
+.*has obj\.count\(\).*first in line
+and has.* obj\.func\(_, _\).* as first required):";
+    INFO("report=" << reports.front().msg);
+    REQUIRE(std::regex_search(reports.front().msg,  std::regex(re)));
+    auto& first = reports.front();
+    INFO(first.file << ':' << first.line << "\n" << first.msg);
+  }
+}
 // SIDE_EFFECT and LR_SIDE_EFFECT tests
 
 TEST_CASE_METHOD(
@@ -967,7 +1012,7 @@ TEST_CASE_METHOD(
 
 TEST_CASE_METHOD(
   Fixture,
-  "C++14: An uncomparable but constructible type by reference mmismatch is reported",
+  "C++14: An uncomparable but constructible type by reference mismatch is reported",
   "[C++14][matching]")
 {
   try
@@ -1195,6 +1240,30 @@ TEST_CASE_METHOD(
     U u;
     REQUIRE_CALL(u, func_crr(_));
     u.func_crr(1);
+  }
+  REQUIRE(reports.empty());
+}
+
+struct promiscuous
+{
+  template <typename T>
+  promiscuous(T&&) {}
+};
+
+struct with_promiscuous
+{
+  MAKE_MOCK1(func, void(promiscuous));
+};
+
+TEST_CASE_METHOD(
+  Fixture,
+  "C++14: wildcard matches parameter constructible from any type",
+  "[C++14][matching]")
+{
+  {
+    with_promiscuous obj;
+    REQUIRE_CALL(obj, func(_));
+    obj.func(1);
   }
   REQUIRE(reports.empty());
 }
@@ -2306,6 +2375,186 @@ TEST_CASE_METHOD(
   REQUIRE(reports.empty());
 }
 
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: any_of is true if at least one element matches",
+    "[C++14][matching][matchers][any_of]"
+    )
+{
+  {
+    mock_str obj;
+    using trompeloeil::any_of;
+    using trompeloeil::eq;
+    REQUIRE_CALL(obj, str(any_of("", eq("foo"))));
+    obj.str("foo");
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: any_of reports if none of the element matches",
+    "[C++14][matching][matchers][any_of]"
+)
+{
+  try {
+    mock_str obj;
+    using trompeloeil::any_of;
+    using trompeloeil::eq;
+    REQUIRE_CALL(obj, str(any_of("", eq("foo"))));
+    obj.str("bar");
+    FAIL("didn't throw");
+  }
+  catch (reported) {
+    REQUIRE(reports.size() == 1U);
+    auto re = R":(No match for call of str with signature void\(std::string\) with\.
+  param  _1 == bar
+
+Tried obj\.str\(any_of\(\"\", eq\(\"foo\"\)\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 to be any of \{ ,  == foo \}):";
+    INFO("report=" << reports.front().msg);
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: any_of can be disambiguated with explicit type",
+    "[C++14][matching][matchers][any_of]"
+)
+{
+  {
+    mock_str obj;
+    using trompeloeil::any_of;
+    using trompeloeil::eq;
+    REQUIRE_CALL(obj, overload(any_of<std::string>("", eq("foo"))));
+    obj.overload(std::string("foo"));
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: none_of is true if no element matches",
+    "[C++14][matching][matchers][none_of]"
+)
+{
+  {
+    mock_str obj;
+    using trompeloeil::none_of;
+    using trompeloeil::eq;
+    REQUIRE_CALL(obj, str(none_of("bar", eq("foo"))));
+    obj.str("zoo");
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: nane_of reports if any of the element matches",
+    "[C++14][matching][matchers][none_of]"
+)
+{
+  try {
+    mock_str obj;
+    using trompeloeil::none_of;
+    using trompeloeil::eq;
+    REQUIRE_CALL(obj, str(none_of("bar", eq("foo"))));
+    obj.str("bar");
+    FAIL("didn't throw");
+  }
+  catch (reported) {
+    REQUIRE(reports.size() == 1U);
+    auto re = R":(No match for call of str with signature void\(std::string\) with\.
+  param  _1 == bar
+
+Tried obj\.str\(none_of\(\"bar\", eq\(\"foo\"\)\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 to be none of \{ bar,  == foo \}):";
+    INFO("report=" << reports.front().msg);
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: none_of can be disambiguated with explicit type",
+    "[C++14][matching][matchers][none_of]"
+)
+{
+  {
+    mock_str obj;
+    using trompeloeil::none_of;
+    using trompeloeil::eq;
+    REQUIRE_CALL(obj, overload(none_of<std::string>("bar", eq("foo"))));
+    obj.overload(std::string("zoo"));
+  }
+  REQUIRE(reports.empty());
+}
+//
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: all_of is true if every element matches",
+    "[C++14][matching][matchers][all_of]"
+)
+{
+  {
+    C_ptr obj;
+    using trompeloeil::all_of;
+    using trompeloeil::ne;
+    using trompeloeil::eq;
+    REQUIRE_CALL(obj, ptr(all_of(ne(nullptr), *eq(3))));
+    int i = 3;
+    obj.ptr(&i);
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: all_of reports if at least one element does not match",
+    "[C++14][matching][matchers][all_of]"
+)
+{
+  try {
+    C_ptr obj;
+    using trompeloeil::all_of;
+    using trompeloeil::eq;
+    using trompeloeil::ne;
+    REQUIRE_CALL(obj, ptr(all_of(ne(nullptr), *eq(3))));
+    int i = 4;
+    obj.ptr(&i);
+    FAIL("didn't throw");
+  }
+  catch (reported) {
+    REQUIRE(reports.size() == 1U);
+    auto re = R":(No match for call of ptr with signature void\(int\*\) with\.
+  param  _1 == .*
+
+Tried obj\.ptr\(all_of\(ne\(nullptr\), \*eq\(3\)\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 to be all of \{  != nullptr,  == 3 \}):";
+    INFO("report=" << reports.front().msg);
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: all_of can be disambiguated with explicit type",
+    "[C++14][matching][matchers][all_of]"
+)
+{
+  {
+    C_ptr obj;
+    using trompeloeil::all_of;
+    using trompeloeil::eq;
+    using trompeloeil::ne;
+    REQUIRE_CALL(obj, coverload(all_of<const int*>(ne(nullptr), *eq(3))));
+    const int i = 3;
+    obj.coverload(&i);
+  }
+  REQUIRE(reports.empty());
+}
+//
 // tests of parameter matching using typed matcher re
 
 #if TROMPELOEIL_TEST_REGEX_FAILURES
@@ -2777,7 +3026,7 @@ Tried obj.str\(trompeloeil::re\("end\$", std::regex_constants::match_not_eol\)\)
 
 #endif /* TROMPELOEIL_TEST_REGEX_FAILURES */
 
-#if TROMPELOEIL_TEST_REGEX_FAILURES
+#if TROMPELOEIL_TEST_REGEX_BOL_EOL_FAILURES
 
 TEST_CASE_METHOD(
   Fixture,
@@ -2805,9 +3054,9 @@ Tried obj.overload\(trompeloeil::re<std::string const&>\("end\$", std::regex_con
   }
 }
 
-#endif /* TROMPELOEIL_TEST_REGEX_FAILURES */
+#endif /* TROMPELOEIL_TEST_REGEX_BOL_EOL_FAILURES */
 
-// tests of parameter matching using neg_matcher
+// tests of parameter matching using not_matcher
 
 TEST_CASE_METHOD(
   Fixture,
@@ -2917,7 +3166,7 @@ TEST_CASE_METHOD(
 
 TEST_CASE_METHOD(
   Fixture,
-  "C++14: ptr to equal nullptr matrches deref",
+  "C++14: ptr to equal nullptr matches deref",
   "[C++14][matching][matchers][eq]")
 {
   {
@@ -3307,6 +3556,1189 @@ Tried obj\.strptr\(\*trompeloeil::re\("end\$"\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
 
 #endif /* TROMPELOEIL_TEST_REGEX_FAILURES */
 
+struct range_mock {
+  MAKE_MOCK1(vector, void(const std::vector<int>&));
+  MAKE_MOCK1(overloaded, void(const std::vector<int>&));
+  MAKE_MOCK1(overloaded, void(const std::list<int>&));
+};
+
+// tests of parameter range_is matcher
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_is",
+    "[C++14][matching][matchers][range_is]"
+    )
+{
+  {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_is(1,3,5)));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_is and a C-array",
+    "[C++14][matching][matchers][range_is]"
+)
+{
+  {
+    range_mock m;
+    int elements[]{1,3,5};
+    REQUIRE_CALL(m, vector(trompeloeil::range_is(elements)));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_is and element matchers",
+    "[C++14][matching][matchers][range_is]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::eq;
+    using trompeloeil::gt;
+    using trompeloeil::ne;
+    REQUIRE_CALL(m, vector(trompeloeil::range_is(eq(1),ne(4),gt(4))));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a mismatching range for range_is is reported",
+    "[C++14][matching][matchers][range_is]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, vector(range_is(ge(1),3,5)));
+    m.vector({1,3, 4});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 4 \}
+
+Tried m\.vector\(range_is\(ge\(1\),3,5\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is \{ >= 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a mismatching range for range_is and a C-array is reported",
+    "[C++14][matching][matchers][range_is]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is;
+    int expected[] { 1, 3, 5 };
+    REQUIRE_CALL(m, vector(range_is(expected)));
+    m.vector({1,3, 4});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 4 \}
+
+Tried m\.vector\(range_is\(expected\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is \{ 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too short range for range_is is reported",
+    "[C++14][matching][matchers][range_is]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, vector(range_is(ge(1),3,5)));
+    m.vector({1,3});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3 \}
+
+Tried m\.vector\(range_is\(ge\(1\),3,5\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is \{ >= 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too short range for range_is and a C-array is reported",
+    "[C++14][matching][matchers][range_is]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is;
+    int expected[] { 1, 3, 5 };
+    REQUIRE_CALL(m, vector(range_is(expected)));
+    m.vector({1,3});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3 \}
+
+Tried m\.vector\(range_is\(expected\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is \{ 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too long range for range_is is reported",
+    "[C++14][matching][matchers][range_is]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, vector(range_is(ge(1),3,5)));
+    m.vector({1,3,5,6});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 5, 6 \}
+
+Tried m\.vector\(range_is\(ge\(1\),3,5\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is \{ >= 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too long range for range_is and a C-array is reported",
+    "[C++14][matching][matchers][range_is]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is;
+    int expected[] { 1, 3, 5 };
+    REQUIRE_CALL(m, vector(range_is(expected)));
+    m.vector({1,3,5,6});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 5, 6 \}
+
+Tried m\.vector\(range_is\(expected\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is \{ 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: range_is can be disambiguated with explicit type",
+    "[C++14][matching][matchers][range_is]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::range_is;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, overloaded(range_is<std::vector<int>>(ge(1),3,5)));
+    m.overloaded(std::vector<int>{1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+//
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_is_permutation",
+    "[C++14][matching][matchers][range_is_permutation]"
+)
+{
+  {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_is_permutation(3,5,1)));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_is_permutation and a C-array",
+    "[C++14][matching][matchers][range_is_permutation]"
+)
+{
+  {
+    range_mock m;
+    int values[] { 3,5,1 };
+    REQUIRE_CALL(m, vector(trompeloeil::range_is_permutation(values)));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_is_permutation and element matchers",
+    "[C++14][matching][matchers][range_is_permutation]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::eq;
+    using trompeloeil::gt;
+    using trompeloeil::ne;
+    REQUIRE_CALL(m, vector(trompeloeil::range_is_permutation(eq(1),ne(4),gt(4))));
+    m.vector({3,1,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a mismatching range for range_is_permutation is reported",
+    "[C++14][matching][matchers][range_is_permutation]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is_permutation;
+    REQUIRE_CALL(m, vector(range_is_permutation(1, 5, 3)));
+    m.vector({1, 3, 4});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 4 \}
+
+Tried m\.vector\(range_is_permutation\(1, 5, 3\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is permutation of \{1, 5, 3 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a mismatcheng range for range_is_permutation and a C-array is reported",
+    "[C++14][matching][matchers][range_is_permutation]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is_permutation;
+    int values[] { 1, 3, 5};
+    REQUIRE_CALL(m, vector(range_is_permutation(values)));
+    m.vector({1,3,4});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 4 \}
+
+Tried m\.vector\(range_is_permutation\(values\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is permutation of \{ 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too short range for range_is_permutation is reported",
+    "[C++14][matching][matchers][range_is_permutation]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is_permutation;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, vector(range_is_permutation(ge(1),3,5)));
+    m.vector({1,3});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3 \}
+
+Tried m\.vector\(range_is_permutation\(ge\(1\),3,5\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is permutation of \{ >= 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too short range for range_is_permutation and a C-array is reported",
+    "[C++14][matching][matchers][range_is_permutation]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is_permutation;
+    int values[] { 1, 3, 5};
+    REQUIRE_CALL(m, vector(range_is_permutation(values)));
+    m.vector({1,3});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3 \}
+
+Tried m\.vector\(range_is_permutation\(values\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is permutation of \{ 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too long range for range_is_permutation is reported",
+    "[C++14][matching][matchers][range_is_permutation]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is_permutation;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, vector(range_is_permutation(ge(1),3,5)));
+    m.vector({1,3,5,6});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 5, 6 \}
+
+Tried m\.vector\(range_is_permutation\(ge\(1\),3,5\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is permutation of \{ >= 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too long range for range_is_permutation and a C-array is reported",
+    "[C++14][matching][matchers][range_is_permutation]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_is_permutation;
+    int expected[]{1,3,5};
+    REQUIRE_CALL(m, vector(range_is_permutation(expected)));
+    m.vector({1,3,5,6});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 5, 6 \}
+
+Tried m\.vector\(range_is_permutation\(expected\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is permutation of \{ 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: range_is_permutation can be disambiguated with explicit type",
+    "[C++14][matching][matchers][range_is_permutation]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::range_is_permutation;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, overloaded(range_is_permutation<std::vector<int>>(ge(1),3,5)));
+    m.overloaded(std::vector<int>{1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+//
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_starts_with",
+    "[C++14][matching][matchers][range_starts_with]"
+)
+{
+  {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_starts_with(1,3)));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_starts_with and a C-array",
+    "[C++14][matching][matchers][range_starts_with]"
+)
+{
+  {
+    range_mock m;
+    int first[] { 1,3 };
+    REQUIRE_CALL(m, vector(trompeloeil::range_starts_with(first)));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_starts_with and element matchers",
+    "[C++14][matching][matchers][range_starts_with]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::eq;
+    using trompeloeil::gt;
+    REQUIRE_CALL(m, vector(trompeloeil::range_starts_with(eq(1),gt(1))));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too short range for range_starts_with is reported",
+    "[C++14][matching][matchers][range_starts_with]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_starts_with;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, vector(range_starts_with(ge(1),3,5)));
+    m.vector({1,3});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3 \}
+
+Tried m\.vector\(range_starts_with\(ge\(1\),3,5\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range starts with \{ >= 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too short range for range_starts_with and a C-array is reported",
+    "[C++14][matching][matchers][range_starts_with]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_starts_with;
+    int tail[] { 1, 3, 5 };
+    REQUIRE_CALL(m, vector(range_starts_with(tail)));
+    m.vector({1,3});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3 \}
+
+Tried m\.vector\(range_starts_with\(tail\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range starts with \{ 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a mismatching range for range_starts_with is reported",
+    "[C++14][matching][matchers][range_starts_with]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_starts_with;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, vector(range_starts_with(ge(1), 3, 5)));
+    m.vector({1, 3, 4});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 4 \}
+
+Tried m\.vector\(range_starts_with\(ge\(1\), 3, 5\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range starts with \{ >= 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a mismatching range for range_starts_with and a C-array is reported",
+    "[C++14][matching][matchers][range_starts_with]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_starts_with;
+    int tail[] { 1, 3, 5 };
+    REQUIRE_CALL(m, vector(range_starts_with(tail)));
+    m.vector({1, 3, 4});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 4 \}
+
+Tried m\.vector\(range_starts_with\(tail\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range starts with \{ 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: range_starts_with can be disambiguated with explicit type",
+    "[C++14][matching][matchers][range_starts_with]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::range_starts_with;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, overloaded(range_starts_with<std::vector<int>>(ge(1),3)));
+    m.overloaded(std::vector<int>{1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_ends_with",
+    "[C++14][matching][matchers][range_ends_with]"
+)
+{
+  {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_ends_with(3,5)));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_ends_with and a C-array",
+    "[C++14][matching][matchers][range_ends_with]"
+)
+{
+  {
+    range_mock m;
+    int tail[]{3,5};
+    REQUIRE_CALL(m, vector(trompeloeil::range_ends_with(tail)));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_ends_with and element matchers",
+    "[C++14][matching][matchers][range_ends_with]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::eq;
+    using trompeloeil::gt;
+    REQUIRE_CALL(m, vector(trompeloeil::range_ends_with(eq(3),gt(1))));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too short range for range_ends_with is reported",
+    "[C++14][matching][matchers][range_ends_with]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_ends_with;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, vector(range_ends_with(ge(1),3,5)));
+    m.vector({1,3});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3 \}
+
+Tried m\.vector\(range_ends_with\(ge\(1\),3,5\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range ends with \{ >= 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: a too short range for range_ends_with and a C-array is reported",
+    "[C++14][matching][matchers][range_ends_with]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_ends_with;
+    int tail[] { 1,3,5};
+    REQUIRE_CALL(m, vector(range_ends_with(tail)));
+    m.vector({1,3});
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3 \}
+
+Tried m\.vector\(range_ends_with\(tail\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range ends with \{ 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: mismatching range for range_ends_with is reported",
+    "[C++14][matching][matchers][range_ends_with]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_ends_with;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, vector(range_ends_with(ge(1), 3, 5)));
+    m.vector({ 1, 3, 4 });
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 4 \}
+
+Tried m\.vector\(range_ends_with\(ge\(1\), 3, 5\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range ends with \{ >= 1, 3, 5 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: mismatching range for range_ends_with and a C-array is reported",
+    "[C++14][matching][matchers][range_ends_with]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::range_ends_with;
+    int tail[] { 1, 3, 4};
+    REQUIRE_CALL(m, vector(range_ends_with(tail)));
+    m.vector({1, 3, 5 });
+    FAIL("didn't throw");
+  }
+  catch(reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 5 \}
+
+Tried m\.vector\(range_ends_with\(tail\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range ends with \{ 1, 3, 4 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: range_ends_with can be disambiguated with explicit type",
+    "[C++14][matching][matchers][range_ends_with]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::range_ends_with;
+    using trompeloeil::ge;
+    REQUIRE_CALL(m, overloaded(range_ends_with<std::vector<int>>(3,ge(5))));
+    m.overloaded(std::vector<int>{1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_includes",
+    "[C++14][matching][matchers][range_includes]"
+)
+{
+  {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_includes(1,5)));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_includes and a C-array",
+    "[C++14][matching][matchers][range_includes]"
+)
+{
+  {
+    range_mock m;
+    int values[] { 5, 1 };
+    REQUIRE_CALL(m, vector(trompeloeil::range_includes(values)));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_includes and element matchers",
+    "[C++14][matching][matchers][range_includes]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::eq;
+    using trompeloeil::gt;
+    REQUIRE_CALL(m, vector(trompeloeil::range_includes(eq(1),gt(4))));
+    m.vector({1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: mismatching elements of a vector tested with matcher range_includes is reported",
+    "[C++14][matching][matchers][range_includes]"
+)
+{
+  try {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_includes(1, 7)));
+    m.vector({1,3,5});
+    FAIL("didn't throw");
+  }
+  catch (reported)
+  {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 5 \}
+
+Tried m\.vector\(trompeloeil::range_includes\(1, 7\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range has \{1, 7 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: mismatching elements of a vector tested with matcher range_includes and a C-array is reported",
+    "[C++14][matching][matchers][range_includes]"
+)
+{
+  try {
+    range_mock m;
+    int values[] { 5, 2 };
+    REQUIRE_CALL(m, vector(trompeloeil::range_includes(values)));
+    m.vector({1,3,5});
+    FAIL("didn't throw");
+  }
+  catch (reported)
+  {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 5 \}
+
+Tried m\.vector\(trompeloeil::range_includes\(values\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range has \{ 5, 2 \}):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+
+  }
+}
+
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: range_includes can be disambiguated with explicit type",
+    "[C++14][matching][matchers][range_includes]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::range_includes;
+    using trompeloeil::gt;
+    REQUIRE_CALL(m, overloaded(range_includes<std::vector<int>>(gt(3),1)));
+    m.overloaded(std::vector<int>{1,3,5});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_all_of",
+    "[C++14][matching][matchers][range_is all]"
+)
+{
+  {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_all_of(3)));
+    m.vector({3,3,3});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: an empty vector matches range_all_of",
+    "[C++14][matching][matchers][range_is all]"
+)
+{
+  {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_all_of(3)));
+    m.vector({});
+  }
+  REQUIRE(reports.empty());
+}
+
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_all_of and element matchers",
+    "[C++14][matching][matchers][range_is all]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::gt;
+    REQUIRE_CALL(m, vector(trompeloeil::range_all_of(gt(0))));
+    m.vector({3,3,3});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: mismatching elements of a vector tested with matcher range_all_of are reported",
+    "[C++14][matching][matchers][range_is all]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::gt;
+    REQUIRE_CALL(m, vector(trompeloeil::range_all_of(gt(0))));
+    m.vector({1,3,0});
+    FAIL("didn't throw");
+  }
+  catch (reported)
+  {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 0 \}
+
+Tried m\.vector\(trompeloeil::range_all_of\(gt\(0\)\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is all > 0):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: range_all_of can be disambiguated with an explicit type",
+    "[C++14][matching][matchers][range_is all]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::gt;
+    REQUIRE_CALL(m, overloaded(trompeloeil::range_all_of<std::vector<int>>(gt(0))));
+    m.overloaded(std::vector<int>{3,3,3});
+  }
+  REQUIRE(reports.empty());
+}
+//
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_any_of",
+    "[C++14][matching][matchers][range_any_of]"
+)
+{
+  {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_any_of(0)));
+    m.vector({0,1,2});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: matcher range_any_of fails an empty range",
+    "[C++14][matching][matchers][range_any_of]"
+)
+{
+  try {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_any_of(0)));
+    m.vector({});
+    FAIL("didn't throw");
+  }
+  catch (reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{  \}
+
+Tried m\.vector\(trompeloeil::range_any_of\(0\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is any == 0):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_any_of and element matchers",
+    "[C++14][matching][matchers][range_any_of]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::lt;
+    REQUIRE_CALL(m, vector(trompeloeil::range_any_of(lt(0))));
+    m.vector({3,3,-3});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: mismatching elements of a vector tested with matcher range_any_of are reported",
+    "[C++14][matching][matchers][range_any_of]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::gt;
+    REQUIRE_CALL(m, vector(trompeloeil::range_any_of(gt(0))));
+    m.vector({-1,-3,0});
+    FAIL("didn't throw");
+  }
+  catch (reported)
+  {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ -1, -3, 0 \}
+
+Tried m\.vector\(trompeloeil::range_any_of\(gt\(0\)\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is any > 0):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: range_any_of can be disambiguated with an explicit type",
+    "[C++14][matching][matchers][range_is any]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::lt;
+    REQUIRE_CALL(m, overloaded(trompeloeil::range_any_of<std::vector<int>>(lt(0))));
+    m.overloaded(std::vector<int>{3,-3,3});
+  }
+  REQUIRE(reports.empty());
+}
+//
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_none_of",
+    "[C++14][matching][matchers][range_none_of]"
+)
+{
+  {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_none_of(0)));
+    m.vector({3,3,3});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: matcher range_none_of accepts an empty range",
+    "[C++14][matching][matchers][range_none_of]"
+)
+{
+  {
+    range_mock m;
+    REQUIRE_CALL(m, vector(trompeloeil::range_none_of(0)));
+    m.vector({});
+  }
+  REQUIRE(reports.empty());
+}
+
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: elements of a vector can be tested with matcher range_none_of and element matchers",
+    "[C++14][matching][matchers][range_none_of]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::lt;
+    REQUIRE_CALL(m, vector(trompeloeil::range_none_of(lt(0))));
+    m.vector({3,3,3});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: mismatching elements of a vector tested with matcher range_none_of are reported",
+    "[C++14][matching][matchers][range_none_of]"
+)
+{
+  try {
+    range_mock m;
+    using trompeloeil::gt;
+    REQUIRE_CALL(m, vector(trompeloeil::range_none_of(gt(0))));
+    m.vector({1,3,0});
+    FAIL("didn't throw");
+  }
+  catch (reported)
+  {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of vector with signature void\(const std::vector<int>&\) with\.
+  param  _1 == \{ 1, 3, 0 \}
+
+Tried m\.vector\(trompeloeil::range_none_of\(gt\(0\)\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is none > 0):";
+
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: range_none_of can be disambiguated with an explicit type",
+    "[C++14][matching][matchers][range_is none]"
+)
+{
+  {
+    range_mock m;
+    using trompeloeil::lt;
+    REQUIRE_CALL(m, overloaded(trompeloeil::range_none_of<std::vector<int>>(lt(0))));
+    m.overloaded(std::vector<int>{3,3,3});
+  }
+  REQUIRE(reports.empty());
+}
+
 // tests of parameter matching using custom typed matcher
 
 TEST_CASE_METHOD(
@@ -3405,6 +4837,109 @@ TEST_CASE_METHOD(
   REQUIRE(reports.empty());
 }
 
+struct xy_coord {
+  int x;
+  int y;
+  friend std::ostream& operator<<(std::ostream& os, xy_coord c)
+  {
+    return os << "{ .x=" << c.x << ", .y=" << c.y << " }";
+  }
+};
+struct xy_mock {
+  MAKE_MOCK1(func, void(const xy_coord&));
+  MAKE_MOCK1(vfunc, void(const std::vector<xy_coord>&));
+};
+
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: MEMBER_IS can match a public member of a struct",
+    "[C++14][matching][matchers][MEMBER_IS]"
+    )
+{
+  {
+    xy_mock m;
+    using trompeloeil::eq;
+    REQUIRE_CALL(m, func(MEMBER_IS(&xy_coord::x, eq(3))));
+    m.func({3, 2});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: MEMBER_IS mismatching is reported",
+    "[C++14][matching][matchers][MEMBER_IS]"
+    )
+{
+  try {
+    xy_mock m;
+    using trompeloeil::eq;
+    REQUIRE_CALL(m, func(MEMBER_IS(&xy_coord::x, eq(3))));
+    m.func({1, 2});
+    FAIL("didn't throw");
+  }
+  catch (reported) {
+    REQUIRE(reports.size() == 1U);
+    INFO("report=" << reports.front().msg);
+    auto re = R":(No match for call of func with signature void\(const xy_coord&\) with\.
+  param  _1 == \{ \.x=1, \.y=2 \}
+
+Tried m\.func\(MEMBER_IS\(&xy_coord::x, eq\(3\)\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 &xy_coord::x == 3):";
+    REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: MEMBER_IS, range_all_of and any_of can be composed",
+    "[C++14][matching][matchers][MEMBER_IS][range_all_of][any_of]"
+    )
+{
+  {
+    xy_mock m;
+    using trompeloeil::lt;
+    using trompeloeil::gt;
+    using trompeloeil::any_of;
+    using trompeloeil::range_all_of;
+    REQUIRE_CALL(m, vfunc(range_all_of(any_of(MEMBER_IS(&xy_coord::x, gt(0)), MEMBER_IS(&xy_coord::y, lt(0))))));
+    m.vfunc({{1,1},{0,-1},{-1,-1}});
+  }
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
+    Fixture,
+    "C++14: A failed composition of MEMBER_IS, range_all_of and any_of is reported",
+    "[C++14][matching][matchers][MEMBER_IS][range_all_of][any_of]"
+)
+{
+  try {
+    xy_mock m;
+    using trompeloeil::lt;
+    using trompeloeil::gt;
+    using trompeloeil::any_of;
+    using trompeloeil::range_all_of;
+    REQUIRE_CALL(m, vfunc(range_all_of(any_of(MEMBER_IS(&xy_coord::x, gt(0)), MEMBER_IS(&xy_coord::y, lt(0))))));
+    m.vfunc({{1,1},{0,-1},{-1,1}});
+    FAIL("didn't throw");
+  }
+  catch (reported)
+  {
+    REQUIRE(reports.size() == 1U);
+    auto re = R":(No match for call of vfunc with signature void\(const std::vector<xy_coord>&\) with\.
+  param  _1 == \{ .* \}
+
+Tried m\.vfunc\(range_all_of\(any_of\(MEMBER_IS\(&xy_coord::x, gt\(0\)\), MEMBER_IS\(&xy_coord::y, lt\(0\)\)\)\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 range is all to be any of \{  &xy_coord::x > 0,  &xy_coord::y < 0 \}):";
+    auto& msg = reports.front().msg;
+    INFO("msg=" << msg);
+    REQUIRE(std::regex_search(msg, std::regex(re)));
+
+  }
+}
+
 #if TROMPELOEIL_TEST_REGEX_FAILURES
 
 TEST_CASE_METHOD(
@@ -3432,13 +4967,102 @@ Tried obj\.foo\(not_empty\{\}\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
   }
 }
 
+
+
 #endif /* TROMPELOEIL_TEST_REGEX_FAILURES */
 
-auto is_clamped_lambda =
-  [](auto x, auto min, auto max) ->decltype(x >= min && x <= max)
+#if !(TROMPELOEIL_CLANG &&                                                           \
+     (TROMPELOEIL_CLANG_VERSION >= 100000 && TROMPELOEIL_CLANG_VERSION < 120000) &&  \
+     (TROMPELOEIL_CPLUSPLUS > 201703L && TROMPELOEIL_CPLUSPLUS < 202100L))
+
+/*
+ * Compile for all configurations except
+ * Clang and (10.0.0 <= version < 12.0.0) and C++20 mode and
+ * libstdc++v3 released with GCC version 10 (not checked).
+ *
+ * This configuration has a defect such that
+ * operator<=>() for std::string, generates a
+ * -Wzero-as-null-pointer-constant warning with the note
+ * "while rewriting comparison as call to 'operator<=>'".
+ * See: https://bugs.llvm.org/show_bug.cgi?id=44325 .
+ */
+
+auto is_clamped_lambda_normal =
+  [](auto x, auto min, auto max) -> decltype(x >= min && x <= max)
+  {
+    return x >= min && x <= max;
+  };
+
+template <typename kind = trompeloeil::wildcard, typename T>
+auto is_clamped_normal(T min, T max)
 {
-  return x >= min && x <= max;
-};
+  using trompeloeil::make_matcher;
+  return make_matcher<kind>(
+    is_clamped_lambda_normal,
+
+    [](std::ostream& os, auto amin, auto amax) {
+      os << " in range [";
+      ::trompeloeil::print(os, amin);
+      os << ", ";
+      ::trompeloeil::print(os, amax);
+      os << "]";
+    },
+
+    min,
+    max);
+}
+
+TEST_CASE_METHOD(
+  Fixture,
+  "C++14: a normal custom duck typed make_matcher-matcher that fails is reported",
+  "[C++14][matching][matchers][custom]")
+{
+  try {
+    mock_c obj;
+    REQUIRE_CALL(obj, foo(is_clamped_normal("b", "d")));
+    obj.foo(std::string("a"));
+    FAIL("didn't report");
+  }
+  catch(reported)
+  {
+    REQUIRE(reports.size() == 1U);
+    auto& msg = reports.front().msg;
+    INFO(msg);
+    auto re = R":(No match for call of foo with signature void\(std::string\) with\.
+  param  _1 == a
+
+Tried obj\.foo\(is_clamped_normal\("b", "d"\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
+  Expected  _1 in range \[b, d\]):";
+    REQUIRE(std::regex_search(msg, std::regex(re)));
+  }
+}
+
+TEST_CASE_METHOD(
+  Fixture,
+  "C++14: a normal custom duck typed make_matcher-matcher that succeeds is not reported",
+  "[C++14][matching][matchers][custom]")
+{
+  mock_c obj;
+  REQUIRE_CALL(obj, foo(is_clamped_normal("b", "d")));
+  obj.foo(std::string("c"));
+}
+
+#endif /* !(Clang and (10.0.0 <= version < 12.0.0) and C++20 mode) */
+
+/*
+ * Define is_clamped_lambda in terms of an expression
+ * that never uses operator<=>() for std::string, which otherwise
+ * may generate a -Wzero-as-null-pointer-constant warning.
+ *
+ * This is compiled for all configurations >= C++14.
+ */
+
+auto is_clamped_lambda =
+  [](auto x, auto min, auto max)
+  -> decltype(x.compare(min) >= 0 && x.compare(max) <= 0)
+  {
+    return x.compare(min) >= 0 && x.compare(max) <= 0;
+  };
 
 template <typename kind = trompeloeil::wildcard, typename T>
 auto is_clamped(T min, T max)
@@ -3468,7 +5092,7 @@ TEST_CASE_METHOD(
     mock_c obj;
     REQUIRE_CALL(obj, foo(is_clamped("b", "d")));
     obj.foo(std::string("a"));
-    FAIL("din't report");
+    FAIL("didn't report");
   }
   catch(reported)
   {
@@ -3503,7 +5127,7 @@ TEST_CASE_METHOD(
 {
   std::ostringstream os;
   trompeloeil::print(os, unknown{});
-  REQUIRE(os.str() == "4-byte object={ 0x10 0x11 0x12 0x13 }");
+  REQUIRE(os.str() == "4-byte object={ 0x01 0x02 0x12 0x13 }");
 }
 
 TEST_CASE_METHOD(
@@ -3515,7 +5139,7 @@ TEST_CASE_METHOD(
   trompeloeil::print(os, unknown{});
   int16_t u = 10000;
   os << u;
-  REQUIRE(os.str() == "4-byte object={ 0x10 0x11 0x12 0x13 }10000");
+  REQUIRE(os.str() == "4-byte object={ 0x01 0x02 0x12 0x13 }10000");
 }
 
 TEST_CASE_METHOD(
@@ -3527,7 +5151,7 @@ TEST_CASE_METHOD(
   os << std::oct << std::setfill('_') << std::setw(4) << std::left;
   trompeloeil::print(os, unknown{});
   os << 8;
-  REQUIRE(os.str() == "4-byte object={ 0x10 0x11 0x12 0x13 }10__");
+  REQUIRE(os.str() == "4-byte object={ 0x01 0x02 0x12 0x13 }10__");
 }
 
 TEST_CASE_METHOD(
@@ -3652,7 +5276,7 @@ TEST_CASE_METHOD(
   try
   {
     m.func(nn::TestOutput{ 3 });
-    FAIL("didn's throw");
+    FAIL("didn't throw");
   }
   catch (reported)
   {
@@ -4185,6 +5809,23 @@ TEST_CASE_METHOD(
 }
 
 TEST_CASE_METHOD(
+    Fixture,
+    "C++14: require destruction fulfilled in sequence with another object is not reported",
+    "[C++14][deathwatched][sequences]")
+{
+  auto obj = new trompeloeil::deathwatched<mock_c>;
+  mock_c obj2;
+  trompeloeil::sequence s;
+  REQUIRE_DESTRUCTION(*obj)
+    .IN_SEQUENCE(s);
+  REQUIRE_CALL(obj2, foo("foo"))
+    .IN_SEQUENCE(s);
+  delete obj;
+  obj2.foo("foo");
+  REQUIRE(reports.empty());
+}
+
+TEST_CASE_METHOD(
   Fixture,
   "C++14: named require destruction fulfilled in sequence is not reported",
   "[C++14][deathwatched][sequences]")
@@ -4214,7 +5855,7 @@ TEST_CASE_METHOD(
   delete obj;
   REQUIRE(!reports.empty());
   auto& msg = reports.front().msg;
-  auto re = R":(Sequence mismatch for sequence "s".*destructor for \*obj at [A-Za-z0-9_ ./:\]*:[0-9]*.*foo"):";
+  auto re = R":(Sequence mismatch for sequence "s".*destructor for \*obj at [A-Za-z0-9_ ./:\]*:[0-9]*.*\n.*foo"):";
   INFO("msg=" << msg);
   REQUIRE(std::regex_search(msg, std::regex(re)));
 }
@@ -4239,7 +5880,7 @@ TEST_CASE_METHOD(
   {
     REQUIRE(!reports.empty());
     auto& msg = reports.front().msg;
-    auto re = R":(Sequence mismatch for sequence "s".*\*obj.foo\("foo"\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*Sequence.* REQUIRE_DESTRUCTION\(\*obj\)):";
+    auto re = R":(Sequence mismatch for sequence "s".*\*obj.foo\("foo"\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*\nSequence.* REQUIRE_DESTRUCTION\(\*obj\)):";
     INFO("msg=" << msg);
     REQUIRE(std::regex_search(msg, std::regex(re)));
   }
@@ -4259,7 +5900,7 @@ TEST_CASE_METHOD(
   delete obj;
   REQUIRE(!reports.empty());
   auto& msg = reports.front().msg;
-  auto re = R":(Sequence mismatch for sequence "s".*destructor for \*obj at [A-Za-z0-9_ ./:\]*:[0-9]*.*foo"):";
+  auto re = R":(Sequence mismatch for sequence "s".*destructor for \*obj at [A-Za-z0-9_ ./:\]*:[0-9]*.*\n.*foo"):";
   INFO("msg=" << msg);
   REQUIRE(std::regex_search(msg, std::regex(re)));
 }
@@ -4284,7 +5925,7 @@ TEST_CASE_METHOD(
   {
     REQUIRE(!reports.empty());
     auto& msg = reports.front().msg;
-    auto re = R":(Sequence mismatch for sequence "s".*\*obj.foo\("foo"\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*Sequence.* NAMED_REQUIRE_DESTRUCTION\(\*obj\)):";
+    auto re = R":(Sequence mismatch for sequence "s".*\*obj.foo\("foo"\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*\nSequence.* NAMED_REQUIRE_DESTRUCTION\(\*obj\)):";
     INFO("msg=" << msg);
     REQUIRE(std::regex_search(msg, std::regex(re)));
   }
@@ -4439,7 +6080,7 @@ Tried obj\.getter\(4\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
 
 TEST_CASE_METHOD(
   Fixture,
-  "C++14: unmatched with wildcard reports failed WITH clauses",
+  "C++14: unmatched with wildcard reports first failed WITH clause",
   "[C++14][mismatches]")
 {
   try {
@@ -4458,8 +6099,7 @@ TEST_CASE_METHOD(
   param  _1 == 4
 
 Tried obj\.getter\(ANY\(int\)\) at [A-Za-z0-9_ ./:\]*:[0-9]*.*
-  Failed WITH\(_1 < 3\)
-  Failed WITH\(_1 > 5\)):";
+  Failed WITH\(_1 < 3\)):";
     REQUIRE(std::regex_search(reports.front().msg, std::regex(re)));
   }
 }
@@ -4944,5 +6584,92 @@ TEST_CASE_METHOD(
   m.f1(0);
   m.f2(0,1);
 }
+
+TEST_CASE_METHOD(
+  Fixture,
+  "C++14: REQUIRE_CALL generate OK-report when satisfied",
+  "[C++14][matching]")
+{
+  {
+    mock_c obj;
+    REQUIRE_CALL(obj, foo("bar"));
+    obj.foo("bar");
+  }
+  REQUIRE(okReports.size() == 1U);
+}
+
+TEST_CASE_METHOD(
+  Fixture,
+  "C++14: REQUIRE_CALL doesn't generate OK-report when not satisfied",
+  "[C++14][matching]")
+{
+  {
+    mock_c obj;
+    REQUIRE_CALL(obj, foo("bar"));
+  }
+  REQUIRE(okReports.empty());
+}
+
+TEST_CASE_METHOD(
+  Fixture,
+  "C++14: ALLOW_CALL generate OK-report when satisfied",
+  "[C++14][matching]")
+{
+  {
+    mock_c obj;
+    ALLOW_CALL(obj, foo("bar"));
+    obj.foo("bar");
+  }
+  REQUIRE(okReports.size() == 1U);
+}
+
+TEST_CASE_METHOD(
+  Fixture,
+  "C++14: ALLOW_CALL doesn't generate OK-report when not satisfied",
+  "[C++14][matching]")
+{
+  {
+    mock_c obj;
+    REQUIRE_CALL(obj, foo("bar"));
+  }
+  REQUIRE(okReports.empty());
+}
+
+#if TROMPELOEIL_HAS_EXPECTED
+TEST_CASE_METHOD(
+  Fixture,
+  "C++23: is_null with std::expected",
+  "[C++23][is_null]")
+{
+  WHEN("value type of expected is not comparable with null")
+  {
+    THEN("is_null is false")
+    {
+      REQUIRE_FALSE(trompeloeil::is_null(std::expected<int,int>{}));
+    }
+  }
+  AND_WHEN("value type is comparable with nullptr but not null")
+  {
+    THEN("is_null is false")
+    {
+      REQUIRE_FALSE(trompeloeil::is_null(std::expected<const void*, int>{"foo"}));
+    }
+  }
+  AND_WHEN("value type is comparable with nullptr and is null")
+  {
+    THEN("is_null is true")
+    {
+      REQUIRE(trompeloeil::is_null(std::expected<const void*, int>{}));
+    }
+  }
+  AND_WHEN("value type is comparable with nullptr but doesn't hold value")
+  {
+    THEN("is_null is false")
+    {
+      REQUIRE_FALSE(trompeloeil::is_null(std::expected<const void*, int>{std::unexpected{3}}));
+    }
+  }
+}
+#endif
 
 #endif /* TROMPELOEIL_CPLUSPLUS > 201103L */

@@ -5,6 +5,7 @@
 - Q. [How do I use *Trompeloeil* with XXX unit test framework?](#unit_test_adaptation)
 - Q. [Is *Trompeloeil* thread-safe?](#thread_safety)
 - Q. [Can a mock function be marked `override`?](#override)
+- Q. [How can I assign to an out-parameter?](#assign_out)
 - Q. [Why can't I **`.RETURN()`** a reference?](#return_reference)
 - Q. [Why can't I change a local variable in **`.SIDE_EFFECT()`**?](#change_side_effect)
 - Q. [Why the "local reference" **`.LR_*()`** variants? Why not always capture by reference?](#why_lr)
@@ -21,6 +22,11 @@
 - Q. [How do I use *Trompeloeil* in a CMake project?](#cmake)
 - Q. [Why are mock objects not move constructible?](#move_constructible)
 - Q. [Why can't I mock a function that returns a template?](#return_template)
+- Q. [Why doesn't **`MAKE_MOCK(...)`** work with templated parameter types?](#template_args)
+- Q. [Why doesn't **`MAKE_MOCK(...)`** work with nullary functions?](#nullary_functions)
+- Q. [Can I mock a `noexcept` function?](#mock_noexcept)
+- Q. [What does it mean that an expectation is "saturated"?](#saturated_expectation)
+- Q. [Can I mock a coroutine functionp?](#coroutines)
 
 ## <A name="why_name"/>Q. Why a name that can neither be pronounced nor spelled?
 
@@ -138,6 +144,35 @@ public:
   MAKE_MOCK1(func1, int(int), override); // overridden
   MAKE_MOCK1(func2, int(int));           // not overridden
 };
+```
+## <A name="assign_out"/>Q. How can I assign to an out-parameter?
+
+**A.** Use the positional name of the parameter and assign to it, for example in a
+[**`.SIDE_EFFECT()`**](reference.md/#SIDE_EFFECT).
+
+Example:
+
+```Cpp
+class C
+{
+public:
+  MAKE_MOCK1(assign_out, void(int&));
+};
+
+using trompeloeil::_;
+
+TEST(some_test)
+{
+  C mock_obj;
+  
+  REQUIRE_CALL(mock_obj, assign_out(_))
+    .SIDE_EFFECT(_1 = 3);
+  
+  int x = 0;
+  
+  mock_obj.assign_out(x);
+  // x is 3 here
+}
 ```
 
 ## <A name="return_reference"/>Q. Why can't I [**`.RETURN()`**](reference.md/#RETURN) a reference?
@@ -279,10 +314,11 @@ idea. If you can provide a pull request, so much the better.
 
 ## <A name="why_param_count"/> Q. Why the need to provide the number of parameters in [**`MAKE_MOCKn()`**](reference.md/#MAKE_MOCKn) when all information is in the signature?
 
-**A.** If you can figure out a way to infer the information necessary to
-generate a mocked implementation without an explicit parameter count,
-please [open an issue](https://github.com/rollbear/trompeloeil/issues)
-discussing the idea. If you can provide a pull request, so much the better.
+**A.** When using the trailing return type syntax for the function signatures, you can
+use the macros [**`MAKE_MOCK(...)`**](reference.md#MAKE_MOCK),
+[**`MAKE_CONST_MOCK(...)`**](reference.md#MAKE_CONST_MOCK) and
+[**`MAKE_STDMETHODCALL_MOCK(...)`**](reference.md#MAKE_STDMETHOD_MOCK) and let the
+preprocessor infer the number of parameters for you.
 
 ## <A name="why_cpp14"/> Q. Why *`C++14`* and not *`C++11`* or *`C++03`* that is more widely spread?
 
@@ -460,7 +496,7 @@ integration tests, especially when threading is involved.
 ## <A name="sequence_times"/>Q. What does it mean to mix **`IN_SEQUENCE`** and **`TIMES`**?
 
 **A.** Using [**`.TIMES()`**](reference.md/#TIMES) with
-[**`.IN_SEQUENCE()`**](refecence.md/#IN_SEQUENCE) is confusing at best, and
+[**`.IN_SEQUENCE()`**](reference.md/#IN_SEQUENCE) is confusing at best, and
 especially when you have a (possibly open) interval for **`.TIMES()`**.
 
 Trompeloeil always sees sequences as observed from a sequence object, and a
@@ -510,26 +546,77 @@ saturated, so the sequence object must move to the next step. The next step is
 options to make it accessible to CMake. (The commands below of for Linux, but it works
 similarly on other platforms.)
 
-First, you could build and install it locally somewhere in your project (here,
-in `./my_proj/toolkits`):
+You can include *Trompeloeil* directly or use it from an installation, which can
+be per-project, per-user, or a system-wide installation.
+
+If you aren't using *Trompeloeil* from an system-wide installed package, you can
+clone *Trompeloeil* in a subdirectory or add it as a Git submodule to your
+project (here, in `./my_proj/toolkits`). For example:
+
+```shell
+git clone https://github.com/rollbear/trompeloeil.git my_proj/toolkits/trompeloeil
+```
+
+To include *Trompeloeil* in a project, add the subdirectory that contains
+*Trompeloeil* to the project's CMakeLists.txt (or any other CMakeLists.txt that
+gets processed before the one that defines the test that use *Trompeloeil*).
 
 ```cmake
-git clone https://github.com/rollbear/trompeloeil.git
-cd trompeloeil
+add_subdirectory(toolkits/trompeloeil)
+```
+
+After that, tests can be linked with *Trompeloeil* without needing
+`find_package()` first. For example:
+
+```cmake
+add_executable( my_unit_tests
+    test1.cpp
+    test2.cpp
+    test_main.cpp
+)
+
+target_link_libraries( my_unit_tests
+    my_library_under_test # provided by an add_library() call elsewhere in your project
+
+    # Nothing to link since both of these libs are header-only,
+    # but this sets up the include path correctly too
+    Catch2::Catch2
+    trompeloeil::trompeloeil
+)
+
+# Optional: Use CTest to manage your tests
+add_test( run_my_unit_tests my_unit_tests ) # May need to call enable_testing() elsewhere also
+```
+
+Please note that *Trompeloeil* will not be installed along your project in this
+case (i.e. when *Trompeloeil* is added as a subdirectory). In most cases, this
+is the desired behavior. This behavior can be overridden by setting
+`TROMPELOEIL_INSTALL_TARGETS` CMake variable to `ON`. e.g:
+
+```shell
+cmake -DTROMPELOEIL_INSTALL_TARGETS=ON -B build .
+cmake --build build --target install
+```
+
+Adding *Trompeloeil* subdirectory and including it in a project's CMakeLists.txt
+is not the only option. Building, and installing it locally somewhere in your
+project is another option:
+
+```shshell
 mkdir build ; cd build
 cmake -G "Unix Makefiles" .. -DCMAKE_INSTALL_PREFIX=../../my_proj/toolkits
 cmake --build . --target install
 ```
 
-This will create a directory structure inside `toolkits` that has `include/trompeoeil.hpp`
-and the CMake find modules in `lib/cmake/trompeoeil`. Whether you add the entire *Trompeoeil*
-repo to your source control is up to you, but the minimal set of files for proper CMake 
+This will create a directory structure inside `toolkits` that has `include/trompeloeil.hpp`
+and the CMake find modules in `lib/cmake/trompeloeil`. Whether you add the entire *Trompeloeil*
+repo to your source control is up to you, but the minimal set of files for proper CMake
 support in is in the `toolkits` directory.
 
-Second, you could install it globally on your system by cloning the repo and installing with
-root privileges:
+Alternatively, you could install it globally on your system by cloning the repo
+and installing with root privileges:
 
-```cmake
+```shell
 git clone https://github.com/rollbear/trompeloeil.git
 cd trompeloeil
 mkdir build ; cd build
@@ -554,8 +641,8 @@ target_link_libraries( my_unit_tests
 
     # Nothing to link since both of these libs are header-only,
     # but this sets up the include path correctly too
-    Catch2::Catch2 
-    trompeloeil
+    Catch2::Catch2
+    trompeloeil::trompeloeil
 )
 
 # Optional: Use CTest to manage your tests
@@ -573,11 +660,13 @@ Finally, you can add *Trompeloeil* to your project and then either (a) use CMake
 `include_directories()`; or (b) use `add_subdirectory()` (one or two argument
 version) to add its path to your project.
 
+If you want to specify a version of *Trompeloeil*, drop the 'v' from the version
+name in `find_package`. E.g. `find_package( trompeloeil 39 EXACT )`.
 
 ### <A name="move_constructible"/> Q. Why are mock objects not move constructible?
 
-**A.** Because a move is potentially dangerous in non-obvious ways. If a mock object is
-moved, the actions associated with an expectation
+**A.** Because a move is potentially dangerous in non-obvious ways.
+If a mock object is moved, the actions associated with an expectation
 ([**`.WITH()`**](reference.md/#WITH),
  [**`.SIDE_EFFECT()`**](reference.md/#SIDE_EFFECT),
  [**`.RETURN()`**](reference.md/#RETURN),
@@ -586,11 +675,9 @@ moved, the actions associated with an expectation
  moved mock object, they will refer to dead data. This is an accepted cost
  in normal C++ code, but since the effect is hidden under the macros,
  it is better to play safe.
- 
+
 With that said, you can explicitly make mock objects movable, if you want to.
 See: [**`trompeloeil_movable_mock`**](reference.md/#movable_mock).
-
-
 
 ### <A name="return_template"/> Q. Why can't I mock a function that returns a template?
 
@@ -609,7 +696,7 @@ work poorly with templates. It sees the parameters to the
 macro above as `make`, `std::pair<int`, followed by `int>(int,int)`, which
 of course is nonsense and causes compilation errors.
 
-One way around this is to create an alias:
+One easy way around this is to create an alias:
 
 ```Cpp
 using pair_int_int = std::pair<int,int>;
@@ -617,12 +704,142 @@ using pair_int_int = std::pair<int,int>;
 struct M
 {
   MAKE_MOCK2(make, pair_int_int(int,int));
+  MAKE_MOCK(make_trail, auto (int, int)->pair_int_int);
 };
 ```
 
-This works around the preprocessor parameter problem.
+These work around the preprocessor parameter problem.
 
 Another way, if you're mocking an interface, is to use
 [**`trompeloeil::mock_interface<T>`**](reference.md/#mock_interface)
 and [**`IMPLEMENT_MOCKn`**](reference.md/#IMPLEMENT_MOCKn). See
 [CookBook](CookBook.md/#creating_mock_classes) for an intro.
+
+### <A name="template_args"/> Q. Why doesn't **`MAKE_MOCK(...)`** work with templated parameter types?
+
+Like this:
+
+```Cpp
+struct M
+{
+  MAKE_MOCK(make, auto (std::pair<int,int>)->int);
+};
+```
+
+**A.** You can, but there is a limitation in the preprocessor, that makes it
+work poorly with templates. The expansion of the
+[**`MAKE_MOCK()`**](reference.md/#MAKE_MOCK) macro sees the parameters to the
+function as `std::pair<int`, followed by `int>`, which  of course is nonsense
+and  causes compilation errors. The same problem applies to the return type.
+
+A way around this is to create an alias:
+
+```Cpp
+using pair_int_int = std::pair<int,int>;
+
+struct M
+{
+  MAKE_MOCK(make, auto (pair_int_int) -> int);
+};
+```
+
+Another way is to resort to [**`MAKE_MOCKn(...)`**](reference.md/#MAKE_MOCKn)
+and be explicit about the function arity.
+
+### <A name="nullary_functions"/> Q. Why doesn't **`MAKE_MOCK(...)`** work with nullary functions?
+
+Like this:
+
+```Cpp
+struct M
+{
+  MAKE_MOCK(make, auto () -> int);
+};
+```
+
+**A.** It does, but compilers disgagree a bit on it.
+
+* MSVC handles nullary functions when compiling with `/Zc:preprocessor`
+  with MSVC 19.40 (VS 17.10) or later.
+
+* Gcc and Clang always handles nullary functions when compiling with
+  C++20 or later, and when enabling a gcc extension by defining the macro
+  `TROMPELOEIL_HAS_GCC_PP` before `#include`:ing the trompeloeil headers, and
+  compiling with `-std=gnu++11`, `-std=gnu++14` or `-std=gnu++17`.
+
+
+### <A name="mock_noexcept"/> Q. Can I mock a `noexcept` function?
+
+**A.** Yes, but with a caveat.
+
+The way to mock a
+[`noexcept`](https://en.cppreference.com/w/cpp/language/noexcept_spec)
+function is to add a `noexcept` specifier to
+[**`MAKE_MOCKn`**](reference.md/#MAKE_MOCKn),
+[**`MAKE_CONST_MOCKn`**](reference.md/#MAKE_CONST_MOCKn),
+[**`IMPLEMENT_MOCKn`**](reference.md/#IMPLEMENT_MOCKn) or
+[**`IMPLEMENT_CONST_MOCKn`**](reference.md/#IMPLEMENT_CONST_MOCKn).
+
+```Cpp
+struct S
+{
+    MAKE_MOCK1(func, void(int), noexcept);
+    //                          ^^^^^^^^  noexcept function
+};
+```
+
+The caveat is that the [violation handlers](CookBook.md/#unit_test_frameworks),
+and specifically the default one, reports violations by throwing an exception,
+which means that any call made in violation of the [expectation](
+reference.md/#expectation) for a
+`noexcept` function leads to program termination. How much information you can
+gain from such an event depends on the runtime system of your tools.
+
+### <A name="saturated_expectation"/> Q. What does it mean that an expectation is "saturated"?
+
+If you see a violation report like this:
+
+```text
+[file/line unavailable]:0: FATAL ERROR: No match for call of func with signature void(int) with.
+  param  _1 == -3
+
+Matches saturated call requirement
+  object.func(trompeloeil::_) at example.cpp:240
+```
+
+What this means is that there is an expectation for the call, but that expectation is no
+longer allowed to be called, its maximum call count has been met.
+
+An example:
+
+```Cpp
+test_func()
+{
+    test_mock obj;
+    REQUIRE_CALL(obj, func(trompeloeil::_))
+      .TIMES(AT_MOST(2));
+
+   exercise(obj); // calls obj.func. OK. Expectation is alive, no prior calls, this one is accepted
+   exercise(obj); // calls obj.func. OK. Expectation is alive, one prior call, this one is accepted
+   exercise(obj); // calls obj.func. Fail. Expectation is alive, two prior calls, this one saturated
+}
+```
+
+### <A name="coroutines"/> Q. Can I mock a coroutine function?
+
+There is experimental support to handle
+[`co_return`](https://en.cppreference.com/w/cpp/language/coroutines) and
+[`co_yield`](https://en.cppreference.com/w/cpp/language/coroutines#co_yield) from member
+functions that return a co-routine type.
+
+Coroutines are supported if the compiler defines the
+[**`__cpp_impl_coroutines`**](https://eel.is/c++draft/cpp.predefined#:__cpp_impl_coroutine)
+feature test macro.
+
+See the reference manual for [**`CO_RETURN(`** *expr* **`)`**](reference.md#CO_RETURN),
+[**`LR_CO_RETURN(`** *expr* **`)`**](reference.md#LR_CO_RETURN),
+[**`CO_THROW(`** *expr **`)`**](reference.md#CO_THROW),
+[**`LR_CO_THROW(`** *expr* **`)`**](reference.md#LR_CO_THROW),
+[**`CO_YIELD(`** *expr* **`)`**](reference.md#CO_YIELD),
+[**`LR_CO_YIELD(`** *expr* **`)`**](reference.md#LR_CO_YIELD).
+

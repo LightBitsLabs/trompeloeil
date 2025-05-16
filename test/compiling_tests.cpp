@@ -14,9 +14,22 @@
 
 #define TROMPELOEIL_SANITY_CHECKS
 
+#if defined(_WIN32)
+#include <Unknwn.h>
+#undef interface
+#endif
+
 #include <trompeloeil.hpp>
+#if not defined(CATCH2_VERSION) || CATCH2_VERSION == 2
+#ifndef CATCH2_MAIN
 #define CATCH_CONFIG_MAIN
-#include <catch.hpp>
+#endif
+#include <catch2/catch.hpp>
+#else
+#if CATCH2_VERSION == 3
+#include <catch2/catch_test_macros.hpp>
+#endif
+#endif
 
 #include <algorithm>
 #include <cstddef>
@@ -28,8 +41,10 @@
 #include <vector>
 
 #include "compiling_tests.hpp"
+#include "test_reporter.hpp"
 
 std::vector<report> reports;
+std::vector<std::string> okReports;
 
 int
 intfunc(int i)
